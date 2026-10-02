@@ -29,3 +29,4 @@ First release.
   for `pruneGrace`.
 - Opt-in discovery of TCP routers' `HostSNI` names and routers' `tls.domains`.
 - `dryRun`, `apiTokenFile`, and config validation with clear errors.
+- Plugin catalog icon (`.assets/icon.png`, drawn in `.assets/icon.svg`).

@@ -3,6 +3,8 @@ type: provider
 import: github.com/KaHooli/Traefik-plugin-cloudflare-ddns
 basePkg: cfsync
 summary: Publish Traefik router hostnames to Cloudflare as DDNS records or Tunnel routes, across multiple zones.
+# Rendered from .assets/icon.svg.
+iconPath: .assets/icon.png
 
 testData:
   dryRun: true

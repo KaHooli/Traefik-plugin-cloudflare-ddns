@@ -391,7 +391,8 @@ README.md  LICENSE
 - `release.yml`: on a `vX.Y.Z` tag, re-runs the checks and publishes a GitHub release
   from the CHANGELOG.
 - Left to the repo owner (see `docs/releasing.md`): the `traefik-plugin` topic, and pushing
-  the first tag after merging. An icon (`iconPath`) is optional.
+  the first tag after merging.
+- Catalog icon: `.assets/icon.png` (`iconPath`), rendered from `.assets/icon.svg`.
 
 ## 8. Testing strategy
 

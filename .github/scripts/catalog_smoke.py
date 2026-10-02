@@ -41,6 +41,10 @@ def main():
         module = re.search(r"^module\s+(\S+)", f.read(), re.M).group(1)
     if manifest["import"] != module:
         fail("manifest import %r does not match go.mod module %r" % (manifest["import"], module))
+    for key in ("iconPath", "bannerPath"):
+        path = manifest.get(key)
+        if path and not os.path.isfile(os.path.join(ROOT, path)):
+            fail("manifest %s %r does not exist" % (key, path))
     print("manifest OK: %s (%s)" % (manifest["displayName"], module))
 
     work = tempfile.mkdtemp()
