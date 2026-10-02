@@ -139,12 +139,12 @@ func TestPlanDDNS(t *testing.T) {
 		}
 	})
 
-	t.Run("CNAME is never replaced, even with adopt", func(t *testing.T) {
+	t.Run("CNAME is not replaced by adopt alone", func(t *testing.T) {
 		got := runPlan(t, func(c *Config) { c.Adopt = true }, planInput{
 			Targets: ddns("app.example.com"),
 			Records: map[string][]dnsRecord{"z1": {foreign("CNAME", "app.example.com", "elsewhere.example.org")}},
 		})
-		expect(t, got, "skip app.example.com: foreign CNAME record exists (-> elsewhere.example.org)")
+		expect(t, got, "skip app.example.com: foreign CNAME record exists (-> elsewhere.example.org); add elsewhere.example.org to adoptFrom to take it over")
 	})
 
 	t.Run("other record types coexist", func(t *testing.T) {

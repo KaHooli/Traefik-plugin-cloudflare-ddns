@@ -35,8 +35,12 @@ type Config struct {
 	EntryPointModes map[string]string `json:"entryPointModes,omitempty" yaml:"entryPointModes,omitempty"`
 	// Exclude lists hostnames (with * wildcards) that are never touched.
 	Exclude []string `json:"exclude,omitempty" yaml:"exclude,omitempty"`
-	// Adopt lets the plugin take over existing A records it did not create.
+	// Adopt lets the plugin take over existing records it did not create:
+	// address records (A/AAAA), and CNAMEs that already point at the tunnel.
 	Adopt bool `json:"adopt,omitempty" yaml:"adopt,omitempty"`
+	// AdoptFrom lists CNAME targets (e.g. the zone apex) whose CNAMEs the
+	// plugin may take over and repoint, even though it didn't create them.
+	AdoptFrom []string `json:"adoptFrom,omitempty" yaml:"adoptFrom,omitempty"`
 	// Prune deletes records this instance created once their hostname is no
 	// longer served by Traefik. Default: true.
 	Prune bool `json:"prune" yaml:"prune"`
@@ -208,6 +212,7 @@ type settings struct {
 	entryPointModes map[string]string
 	exclude         []string
 	adopt           bool
+	adoptFrom       map[string]bool
 	prune           bool
 	pruneGrace      time.Duration
 
@@ -344,6 +349,18 @@ func (c *Config) validate() (*settings, error) {
 		if p != "" {
 			s.exclude = append(s.exclude, p)
 		}
+	}
+
+	s.adoptFrom = make(map[string]bool)
+	for _, t := range c.AdoptFrom {
+		t = normalizeTarget(t)
+		if t == "" {
+			continue
+		}
+		if !strings.Contains(t, ".") || strings.ContainsAny(t, " */:") {
+			return nil, fmt.Errorf("adoptFrom entries must be hostnames, got %q", t)
+		}
+		s.adoptFrom[t] = true
 	}
 
 	if s.cfToken, err = loadToken(c.Cloudflare.APIToken, c.Cloudflare.APITokenFile); err != nil {
@@ -548,4 +565,10 @@ func toSet(values []string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// normalizeTarget lowercases a DNS name and drops a trailing dot, so CNAME
+// targets compare equal however they were written.
+func normalizeTarget(name string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
 }
