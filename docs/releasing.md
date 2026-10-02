@@ -21,16 +21,23 @@ topic, fetches tagged versions through the Go module proxy, and test-loads them 
    catalog does.
 2. In `CHANGELOG.md`, move the `Unreleased` entries into a new `## [X.Y.Z] - YYYY-MM-DD`
    section (for the first release, replace `- unreleased` with the date) and merge that.
-3. Tag `main` and push the tag:
+3. Release it, either way:
+   - **From the browser:** *Actions* → **Release** → *Run workflow*, keep the branch on
+     `main`, enter the version (e.g. `v0.1.0`) and run. The workflow runs the checks, then
+     creates the tag on `main`'s latest commit and pushes it.
+   - **From a clone:** tag `main` and push the tag:
 
-   ```sh
-   git tag -a v0.1.0 -m "v0.1.0"
-   git push origin v0.1.0
-   ```
+     ```sh
+     git tag -a v0.1.0 -m "v0.1.0"
+     git push origin v0.1.0
+     ```
 
    The **Release** workflow re-runs the tests, Yaegi tests and the catalog smoke test, then
    publishes a GitHub release with that version's CHANGELOG section as its notes. It
-   refuses to run if `CHANGELOG.md` has no section for the tag.
+   refuses to run if `CHANGELOG.md` has no section for the version, if the version isn't
+   `vX.Y.Z`, or (when run from the browser) if the tag already exists or the branch isn't
+   `main`. Don't use GitHub's *Draft a new release* page: it creates the release itself,
+   so the workflow's own release step would then fail.
 4. Within about a day the version appears in the catalog. If the catalog can't import it,
    it opens an issue in this repository and stops retrying until the issue is closed.
 

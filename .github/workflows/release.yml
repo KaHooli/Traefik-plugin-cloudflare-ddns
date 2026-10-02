@@ -1,10 +1,19 @@
 name: Release
 
-# Pushing a vX.Y.Z tag runs the checks and publishes a GitHub release. The
+# Two ways to release:
+# - push a vX.Y.Z tag, or
+# - run this workflow from the Actions tab ("Run workflow") on main with a
+#   version: it runs the checks, then creates and pushes the tag itself.
+# Either way it publishes a GitHub release from the CHANGELOG section. The
 # Traefik plugin catalog picks up new tags on its own (it polls GitHub daily).
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to tag and release, e.g. v0.1.0 (main is tagged)"
+        required: true
 
 permissions:
   contents: write
@@ -25,14 +34,34 @@ jobs:
           path: go/src/github.com/KaHooli/Traefik-plugin-cloudflare-ddns
           fetch-depth: 0
 
+      - name: Resolve version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_VERSION"
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "Run this workflow on main (got $GITHUB_REF)"; exit 1
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              echo "Tag $tag already exists"; exit 1
+            fi
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          if ! echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Version must look like v1.2.3, got '$tag'"; exit 1
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
       - uses: actions/setup-go@v5
         with:
           go-version: stable
 
       - name: Check tag matches CHANGELOG
         run: |
-          grep -q "^## \[${GITHUB_REF_NAME#v}\]" CHANGELOG.md || {
-            echo "CHANGELOG.md has no section for ${GITHUB_REF_NAME}"; exit 1; }
+          grep -q "^## \[${TAG#v}\]" CHANGELOG.md || {
+            echo "CHANGELOG.md has no section for ${TAG}"; exit 1; }
 
       - name: go test
         run: go test -race -count=1 ./...
@@ -49,16 +78,23 @@ jobs:
           python3 -m pip install --quiet pyyaml
           python3 .github/scripts/catalog_smoke.py "$RUNNER_TEMP/traefik"
 
+      - name: Create tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
           # Release notes: this version's CHANGELOG section.
-          awk -v v="$version" '
+          awk -v v="${TAG#v}" '
             $0 ~ "^## \\[" v "\\]" { on = 1; next }
             on && /^## \[/ { exit }
             on { print }
           ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
-          gh release create "$GITHUB_REF_NAME" --verify-tag \
-            --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --verify-tag \
+            --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
