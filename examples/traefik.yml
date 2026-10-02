@@ -46,6 +46,13 @@ providers:
       tunnel:
         id: "<tunnel-uuid>"
         service: http://traefik:8081   # the tunnel entrypoint, as cloudflared sees it
+      # Optional:
+      # ddns:
+      #   ipv6: true                   # also publish AAAA records
+      #   dnsOnlyEntryPoints: [vpn]    # grey-cloud records for these entrypoints
+      # traefikApi:
+      #   includeTcpRouters: true      # publish HostSNI names (DNS-only)
+      #   includeTlsDomains: true      # publish tls.domains main/sans
 
 experimental:
   localPlugins:

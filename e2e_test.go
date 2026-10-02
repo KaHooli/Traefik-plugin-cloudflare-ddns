@@ -13,10 +13,17 @@ import (
 	"time"
 )
 
-// fakeTraefik serves /api/http/routers from a mutable list.
+// fakeTraefik serves /api/http/routers and /api/tcp/routers from mutable lists.
 type fakeTraefik struct {
 	mu      sync.Mutex
 	routers []router
+	tcp     []router
+}
+
+func (f *fakeTraefik) setTCP(routers ...router) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tcp = routers
 }
 
 func (f *fakeTraefik) set(routers ...router) {
@@ -25,10 +32,17 @@ func (f *fakeTraefik) set(routers ...router) {
 	f.routers = routers
 }
 
-func (f *fakeTraefik) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+func (f *fakeTraefik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	_ = json.NewEncoder(w).Encode(f.routers)
+	switch r.URL.Path {
+	case "/api/http/routers":
+		_ = json.NewEncoder(w).Encode(f.routers)
+	case "/api/tcp/routers":
+		_ = json.NewEncoder(w).Encode(f.tcp)
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 // fakeIP serves a mutable public IP.
@@ -58,23 +72,27 @@ type e2e struct {
 	p       *Provider
 	traefik *fakeTraefik
 	ip      *fakeIP
+	ip6     *fakeIP
 	cf      *fakeCloudflare
 	now     time.Time
 	out     *syncBuffer
 }
 
 func newE2E(t *testing.T, mutate func(*Config)) *e2e {
-	e := &e2e{t: t, traefik: &fakeTraefik{}, ip: &fakeIP{ip: "203.0.113.10"}, now: testNow, out: &syncBuffer{}}
+	e := &e2e{t: t, traefik: &fakeTraefik{}, ip: &fakeIP{ip: "203.0.113.10"}, ip6: &fakeIP{ip: "2001:db8::10"}, now: testNow, out: &syncBuffer{}}
 	e.cf = newFakeCloudflare(t, zoneCom, zoneNet)
 	traefikSrv := httptest.NewServer(e.traefik)
 	ipSrv := httptest.NewServer(e.ip)
+	ip6Srv := httptest.NewServer(e.ip6)
 	t.Cleanup(func() { traefikSrv.Close() })
 	t.Cleanup(func() { ipSrv.Close() })
+	t.Cleanup(func() { ip6Srv.Close() })
 
 	c := testConfig()
 	c.TraefikAPI.URL = traefikSrv.URL + "/api"
 	c.Cloudflare.APIURL = e.cf.srv.URL
 	c.DDNS.IPSources = []string{ipSrv.URL}
+	c.DDNS.IPv6Sources = []string{ip6Srv.URL}
 	c.EntryPointModes = map[string]string{"tunnel": "tunnel", "lan": "none"}
 	c.Exclude = []string{"mail.example.com"}
 	if mutate != nil {
@@ -279,4 +297,80 @@ func TestEndToEndTunnelDryRun(t *testing.T) {
 			t.Errorf("missing %q in log:\n%s", want, e.out.String())
 		}
 	}
+}
+
+func TestEndToEndPhase3(t *testing.T) {
+	e := newE2E(t, func(c *Config) {
+		c.DDNS.IPv6 = true
+		c.DDNS.DNSOnlyEntryPoints = []string{"vpn"}
+		c.TraefikAPI.IncludeTCPRouters = true
+		c.TraefikAPI.IncludeTLSDomains = true
+	})
+	tlsRouter := rt("site@file", "websecure", "Host(`www.example.com`)")
+	tlsRouter.TLS = &routerTLS{Domains: []tlsDomain{{Main: "example.com", SANs: []string{"*.example.com", "alt.example.com"}}}}
+	e.traefik.set(tlsRouter, rt("wg@file", "vpn", "Host(`vpn.example.com`)"))
+	tcp := rt("db@file", "websecure", "HostSNI(`db.example.net`)")
+	wild := rt("any@file", "websecure", "HostSNI(`*`)")
+	e.traefik.setTCP(tcp, wild)
+
+	e.tick(0)
+	type rec struct {
+		content string
+		proxied bool
+	}
+	got := make(map[string]rec)
+	for _, z := range []string{"z1", "z2"} {
+		for _, r := range e.cf.records(z) {
+			got[r.Type+" "+r.Name] = rec{r.Content, r.Proxied}
+		}
+	}
+	want := map[string]rec{
+		"A www.example.com":    {"203.0.113.10", true},
+		"AAAA www.example.com": {"2001:db8::10", true},
+		"A example.com":        {"203.0.113.10", true}, // tls.domains main
+		"AAAA example.com":     {"2001:db8::10", true},
+		"A alt.example.com":    {"203.0.113.10", true}, // tls.domains san; the wildcard is skipped
+		"AAAA alt.example.com": {"2001:db8::10", true},
+		"A vpn.example.com":    {"203.0.113.10", false}, // dns-only entrypoint
+		"AAAA vpn.example.com": {"2001:db8::10", false},
+		"A db.example.net":     {"203.0.113.10", false}, // TCP router: never proxied
+		"AAAA db.example.net":  {"2001:db8::10", false},
+	}
+	if len(got) != len(want) {
+		t.Errorf("got %d records, want %d: %v", len(got), len(want), got)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%s = %+v, want %+v", k, got[k], w)
+		}
+	}
+	if !strings.Contains(e.out.String(), "vpn.example.com <- wg@file [dns-only]") {
+		t.Errorf("dns-only not shown in summary:\n%s", e.out.String())
+	}
+
+	// IPv6 detection fails: AAAA records are left alone, IPv4 keeps working.
+	e.ip6.set("not-an-ip")
+	e.ip.set("203.0.113.20")
+	writes := e.tick(5 * time.Minute)
+	for _, w := range writes {
+		if !strings.HasPrefix(w, "update ") || !strings.HasSuffix(w, "203.0.113.20") {
+			t.Errorf("unexpected write while IPv6 is unknown: %s", w)
+		}
+	}
+	if len(writes) != 5 {
+		t.Errorf("writes = %v", writes)
+	}
+}
+
+// A tunnel that is still configured keeps its ingress managed after tunnel
+// mode is removed from every entrypoint, so pruned hosts lose their rules.
+func TestEndToEndTunnelRulesCleanedAfterModeRemoved(t *testing.T) {
+	e := newE2E(t, func(c *Config) { c.EntryPointModes = nil })
+	e.cf.add("z1", ownedCNAME("old.example.com"))
+	e.cf.setIngress(`{"hostname":"old.example.com","service":"http://traefik:8081"}`, `{"service":"http_status:404"}`)
+	e.traefik.set(rt("web@docker", "websecure", "Host(`web.example.com`)"))
+
+	expect(t, e.tick(0), "create web.example.com 203.0.113.10")
+	expect(t, e.tick(15*time.Minute), "tunnel put", "delete old.example.com "+testTarget)
+	expect(t, e.cf.ingress(), "<nil>=http_status:404")
 }

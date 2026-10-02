@@ -62,6 +62,10 @@ type TraefikAPIConfig struct {
 	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty" yaml:"insecureSkipVerify,omitempty"`
 	// Timeout per request. Default: 10s.
 	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	// IncludeTLSDomains also publishes the routers' tls.domains (main and sans).
+	IncludeTLSDomains bool `json:"includeTlsDomains,omitempty" yaml:"includeTlsDomains,omitempty"`
+	// IncludeTCPRouters also publishes HostSNI names of TCP routers (DNS-only DDNS).
+	IncludeTCPRouters bool `json:"includeTcpRouters,omitempty" yaml:"includeTcpRouters,omitempty"`
 }
 
 // CloudflareConfig holds the Cloudflare API settings.
@@ -82,16 +86,27 @@ type CloudflareConfig struct {
 
 // DDNSConfig holds the settings for DDNS records.
 type DDNSConfig struct {
+	// IPv4 publishes A records. Default: true.
+	IPv4 bool `json:"ipv4" yaml:"ipv4"`
+	// IPv6 publishes AAAA records. Default: false.
+	IPv6 bool `json:"ipv6,omitempty" yaml:"ipv6,omitempty"`
 	// IPSources are URLs returning the public IPv4 address as plain text, tried in order.
 	IPSources []string `json:"ipSources,omitempty" yaml:"ipSources,omitempty"`
+	// IPv6Sources are URLs returning the public IPv6 address as plain text, tried in order.
+	IPv6Sources []string `json:"ipv6Sources,omitempty" yaml:"ipv6Sources,omitempty"`
 	// StaticIP skips detection and uses this IPv4 address.
 	StaticIP string `json:"staticIp,omitempty" yaml:"staticIp,omitempty"`
+	// StaticIPv6 skips detection and uses this IPv6 address.
+	StaticIPv6 string `json:"staticIpv6,omitempty" yaml:"staticIpv6,omitempty"`
 	// IPInterval is how often the public IP is re-detected. Default: 5m.
 	IPInterval string `json:"ipInterval,omitempty" yaml:"ipInterval,omitempty"`
 	// Proxied sets the Cloudflare proxy (orange cloud) on records. Default: true.
 	Proxied bool `json:"proxied" yaml:"proxied"`
 	// TTL in seconds for unproxied records; 1 means automatic. Default: 1.
 	TTL int `json:"ttl,omitempty" yaml:"ttl,omitempty"`
+	// DNSOnlyEntryPoints publishes hosts on these entrypoints without the
+	// Cloudflare proxy (grey cloud), e.g. for VPN or non-HTTP services.
+	DNSOnlyEntryPoints []string `json:"dnsOnlyEntryPoints,omitempty" yaml:"dnsOnlyEntryPoints,omitempty"`
 }
 
 // TunnelConfig holds the settings for tunnel mode.
@@ -139,6 +154,11 @@ var defaultIPSources = []string{
 	"https://ifconfig.me/ip",
 }
 
+var defaultIPv6Sources = []string{
+	"https://api6.ipify.org",
+	"https://v6.ident.me",
+}
+
 // CreateConfig returns the default configuration. Called by Traefik.
 func CreateConfig() *Config {
 	return &Config{
@@ -156,6 +176,7 @@ func CreateConfig() *Config {
 			APIURL:     defaultCloudflareURL,
 		},
 		DDNS: DDNSConfig{
+			IPv4:       true,
 			IPInterval: defaultIPInterval.String(),
 			Proxied:    true,
 			TTL:        1,
@@ -180,6 +201,8 @@ type settings struct {
 	timeout     time.Duration
 	entryPoints map[string]bool
 	providers   map[string]bool
+	tlsDomains  bool
+	tcpRouters  bool
 
 	defaultMode     string
 	entryPointModes map[string]string
@@ -193,11 +216,16 @@ type settings struct {
 	zones      map[string]bool
 	instanceID string
 
+	ipv4       bool
+	ipv6       bool
 	ipSources  []string
+	ip6Sources []string
 	staticIP   string
+	staticIP6  string
 	ipInterval time.Duration
 	proxied    bool
 	ttl        int
+	dnsOnlyEPs map[string]bool
 
 	accountID          string
 	tunnelID           string
@@ -211,6 +239,13 @@ type settings struct {
 // tunnelTarget is the CNAME target for tunnel-mode hosts.
 func (s *settings) tunnelTarget() string {
 	return s.tunnelID + ".cfargotunnel.com"
+}
+
+// ingressManaged reports whether tunnel ingress rules are read and written.
+// This stays on while a tunnel is configured even if no entrypoint uses
+// tunnel mode any more, so rules for pruned CNAMEs are still removed.
+func (s *settings) ingressManaged() bool {
+	return s.manageIngress && s.tunnelID != "" && s.accountID != ""
 }
 
 // usesMode reports whether any entrypoint (or the default) maps to mode.
@@ -237,6 +272,11 @@ func (c *Config) validate() (*settings, error) {
 		insecure:    c.TraefikAPI.InsecureSkipVerify,
 		entryPoints: toSet(c.EntryPoints),
 		providers:   toSet(c.Providers),
+		tlsDomains:  c.TraefikAPI.IncludeTLSDomains,
+		tcpRouters:  c.TraefikAPI.IncludeTCPRouters,
+		ipv4:        c.DDNS.IPv4,
+		ipv6:        c.DDNS.IPv6,
+		dnsOnlyEPs:  toSet(c.DDNS.DNSOnlyEntryPoints),
 		adopt:       c.Adopt,
 		prune:       c.Prune,
 		zones:       toSet(c.Cloudflare.Zones),
@@ -329,6 +369,25 @@ func (c *Config) validate() (*settings, error) {
 	if len(s.ipSources) == 0 {
 		s.ipSources = append([]string(nil), defaultIPSources...)
 	}
+	for _, src := range c.DDNS.IPv6Sources {
+		src = strings.TrimSpace(src)
+		if src != "" {
+			s.ip6Sources = append(s.ip6Sources, src)
+		}
+	}
+	if len(s.ip6Sources) == 0 {
+		s.ip6Sources = append([]string(nil), defaultIPv6Sources...)
+	}
+	if !s.ipv4 && !s.ipv6 && s.usesMode(modeDDNS) {
+		return nil, errors.New("ddns.ipv4 and ddns.ipv6 are both off, but an entrypoint uses ddns mode")
+	}
+	if ip := strings.TrimSpace(c.DDNS.StaticIPv6); ip != "" {
+		parsed := net.ParseIP(ip)
+		if parsed == nil || parsed.To4() != nil {
+			return nil, fmt.Errorf("ddns.staticIpv6 must be an IPv6 address, got %q", ip)
+		}
+		s.staticIP6 = parsed.String()
+	}
 	if ip := strings.TrimSpace(c.DDNS.StaticIP); ip != "" {
 		parsed := net.ParseIP(ip)
 		if parsed == nil || parsed.To4() == nil {
@@ -361,6 +420,9 @@ func (s *settings) validateTunnel(epServices map[string]string) error {
 		s.entryPointServices[ep] = svc
 	}
 
+	if s.tunnelID != "" && !isUUID(s.tunnelID) {
+		return fmt.Errorf("tunnel.id must be the tunnel UUID, got %q", s.tunnelID)
+	}
 	if !s.usesMode(modeTunnel) {
 		return nil
 	}

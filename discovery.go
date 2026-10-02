@@ -13,13 +13,25 @@ import (
 	"strings"
 )
 
-// router is the subset of Traefik's /api/http/routers item that we use.
+// router is the subset of Traefik's /api/{http,tcp}/routers item that we use.
 type router struct {
-	Name        string   `json:"name"`
-	Rule        string   `json:"rule"`
-	Provider    string   `json:"provider"`
-	Status      string   `json:"status"`
-	EntryPoints []string `json:"entryPoints"`
+	Name        string     `json:"name"`
+	Rule        string     `json:"rule"`
+	Provider    string     `json:"provider"`
+	Status      string     `json:"status"`
+	EntryPoints []string   `json:"entryPoints"`
+	TLS         *routerTLS `json:"tls"`
+	// TCP is set for routers read from /api/tcp/routers.
+	TCP bool `json:"-"`
+}
+
+type routerTLS struct {
+	Domains []tlsDomain `json:"domains"`
+}
+
+type tlsDomain struct {
+	Main string   `json:"main"`
+	SANs []string `json:"sans"`
 }
 
 // discoveredHost is a hostname together with the routers that use it and
@@ -28,6 +40,9 @@ type discoveredHost struct {
 	Host        string
 	Routers     []string
 	EntryPoints []string
+	// TCP is set when a TCP router uses the host; it is then published
+	// without the Cloudflare proxy, which only handles HTTP.
+	TCP bool
 }
 
 const maxPages = 100
@@ -52,9 +67,30 @@ func newAPIClient(s *settings) *apiClient {
 	}
 }
 
-// listHTTPRouters reads all pages of /http/routers. Traefik paginates with
-// the per_page/page query parameters and an X-Next-Page response header.
+// listRouters reads HTTP routers, plus TCP routers when tcp is set.
+func (c *apiClient) listRouters(ctx context.Context, tcp bool) ([]router, error) {
+	routers, err := c.listHTTPRouters(ctx)
+	if err != nil || !tcp {
+		return routers, err
+	}
+	tcpRouters, err := c.list(ctx, "/tcp/routers")
+	if err != nil {
+		return nil, err
+	}
+	for i := range tcpRouters {
+		tcpRouters[i].TCP = true
+	}
+	return append(routers, tcpRouters...), nil
+}
+
+// listHTTPRouters reads all pages of /http/routers.
 func (c *apiClient) listHTTPRouters(ctx context.Context) ([]router, error) {
+	return c.list(ctx, "/http/routers")
+}
+
+// list reads all pages of a router list. Traefik paginates with the
+// per_page/page query parameters and an X-Next-Page response header.
+func (c *apiClient) list(ctx context.Context, path string) ([]router, error) {
 	var all []router
 	page := 1
 	for n := 0; n < maxPages; n++ {
@@ -62,7 +98,7 @@ func (c *apiClient) listHTTPRouters(ctx context.Context) ([]router, error) {
 		q.Set("per_page", "100")
 		q.Set("page", strconv.Itoa(page))
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/http/routers?"+q.Encode(), nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path+"?"+q.Encode(), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -80,12 +116,12 @@ func (c *apiClient) listHTTPRouters(ctx context.Context) ([]router, error) {
 			return nil, err
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("GET /http/routers: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			return nil, fmt.Errorf("GET %s: HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(body)))
 		}
 
 		var items []router
 		if err := json.Unmarshal(body, &items); err != nil {
-			return nil, fmt.Errorf("decode /http/routers: %w", err)
+			return nil, fmt.Errorf("decode %s: %w", path, err)
 		}
 		all = append(all, items...)
 
@@ -105,6 +141,7 @@ func collectHosts(routers []router, s *settings) ([]discoveredHost, []string) {
 	var skippedRouters []string
 	byHost := make(map[string][]string)
 	entryPoints := make(map[string]map[string]bool)
+	tcp := make(map[string]bool)
 
 	for _, r := range routers {
 		if r.Status != "" && r.Status != "enabled" {
@@ -121,12 +158,24 @@ func collectHosts(routers []router, s *settings) ([]discoveredHost, []string) {
 			continue
 		}
 
-		found, skipped := extractHosts(r.Rule)
+		matcher := "Host"
+		if r.TCP {
+			matcher = "HostSNI"
+		}
+		found, skipped := extractMatcherHosts(r.Rule, matcher)
+		if s.tlsDomains && r.TLS != nil {
+			found = appendTLSDomains(found, r.TLS.Domains)
+		}
 		if skipped {
 			skippedRouters = append(skippedRouters, r.Name)
 		}
 		for _, h := range found {
-			byHost[h] = append(byHost[h], r.Name)
+			if r.TCP {
+				tcp[h] = true
+			}
+			if !containsString(byHost[h], r.Name) {
+				byHost[h] = append(byHost[h], r.Name)
+			}
 			if entryPoints[h] == nil {
 				entryPoints[h] = make(map[string]bool)
 			}
@@ -143,7 +192,7 @@ func collectHosts(routers []router, s *settings) ([]discoveredHost, []string) {
 			eps = append(eps, ep)
 		}
 		sort.Strings(eps)
-		hosts = append(hosts, discoveredHost{Host: h, Routers: rs, EntryPoints: eps})
+		hosts = append(hosts, discoveredHost{Host: h, Routers: rs, EntryPoints: eps, TCP: tcp[h]})
 	}
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].Host < hosts[j].Host })
 	sort.Strings(skippedRouters)
@@ -153,6 +202,29 @@ func collectHosts(routers []router, s *settings) ([]discoveredHost, []string) {
 func anyIn(values []string, set map[string]bool) bool {
 	for _, v := range values {
 		if set[strings.ToLower(v)] {
+			return true
+		}
+	}
+	return false
+}
+
+// appendTLSDomains adds the literal names of tls.domains, skipping wildcards
+// and names already present.
+func appendTLSDomains(hosts []string, domains []tlsDomain) []string {
+	for _, d := range domains {
+		for _, name := range append([]string{d.Main}, d.SANs...) {
+			h := normalizeHost(name)
+			if h != "" && !containsString(hosts, h) {
+				hosts = append(hosts, h)
+			}
+		}
+	}
+	return hosts
+}
+
+func containsString(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
 			return true
 		}
 	}

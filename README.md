@@ -7,22 +7,28 @@ pointing at your public IP (DDNS), or through a Cloudflare Tunnel, depending on 
 entrypoint its router uses. Records and tunnel routes it created are removed once they
 are no longer needed.
 
-> **Status:** DDNS (IPv4) and Cloudflare Tunnel are implemented. IPv6 and other extras
-> are planned; see [PLAN.md](PLAN.md).
+> **Status:** DDNS (IPv4, optional IPv6) and Cloudflare Tunnel are implemented.
+> Publishing to the plugin catalog is next; see [PLAN.md](PLAN.md).
 
 ## How it decides what to do
 
 1. **Discover:** every enabled HTTP router's `Host(...)` names, from all providers.
-   `HostRegexp` and wildcards are skipped.
+   `HostRegexp` and wildcards are skipped. Optionally also the routers' `tls.domains`
+   (`traefikApi.includeTlsDomains`) and TCP routers' `HostSNI(...)` names
+   (`traefikApi.includeTcpRouters`).
 2. **Mode by entrypoint:** each host gets the mode of the entrypoints its routers use,
    via `entryPointModes` (unlisted entrypoints use `defaultMode`):
-   - `ddns`: an `A` record pointing at the public IPv4 address
+   - `ddns`: an `A` record pointing at the public IPv4 address, and/or an `AAAA` record
+     with `ddns.ipv6: true`. Proxied unless the host is on an entrypoint in
+     `ddns.dnsOnlyEntryPoints` or is used by a TCP router; the Cloudflare proxy only
+     handles HTTP(S).
    - `tunnel`: a proxied `CNAME` to `<tunnel-id>.cfargotunnel.com`, plus a public-hostname
      (ingress) rule on the tunnel sending the host to Traefik
    - `none`: never published
 
    If a host's routers use entrypoints with *different* modes, it is left untouched and
-   logged as a conflict.
+   logged as a conflict. So is a TCP host on a tunnel entrypoint, because the tunnel
+   carries HTTP only.
 3. **Zone:** the longest Cloudflare zone name the host ends with, across every zone the
    token can see. So `app.example.com` and `app.example.net` each land in their own
    zone of the same account. Restrict this with `cloudflare.zones`.
@@ -40,6 +46,9 @@ are no longer needed.
    the record this instance created is deleted after `pruneGrace` (15 min), together with
    its tunnel rule. The wait covers container restarts and Traefik loading its providers at
    startup. Nothing is pruned while discovery returns no hosts at all.
+
+If public-IP detection fails for one family, that family's records are left as they are
+until detection works again; the other family carries on.
 
 Cloudflare is only called when something changed (the host list, modes, or public IP),
 when the last attempt failed, when a pending deletion is due, or every `verifyInterval`.
@@ -59,6 +68,8 @@ directly:
 - Your other rules, path rules, and all other tunnel settings are left exactly as they were.
 - A rule is only removed together with the `CNAME` this instance owns for the host, so
   ownership survives restarts. The config is only written when something changed.
+- Rules keep being maintained while `tunnel.id` and `cloudflare.accountId` are set, even if
+  no entrypoint uses tunnel mode any more, so rules of pruned hosts are still removed.
 
 For a **locally-managed** tunnel (`config.yml`), set `tunnel.manageIngress: false`. The
 plugin then only creates the `CNAME`s, and you route hostnames to Traefik in `config.yml`,
@@ -145,6 +156,8 @@ temp.example.com no longer served; A 203.0.113.10 will be deleted in 15m0s
 | `prune` | `true` | Delete owned records whose host is gone |
 | `pruneGrace` | `15m` | How long a host must be gone before deletion |
 | `entryPoints` / `providers` | all | Only *discover* routers on these entrypoints / from these providers |
+| `traefikApi.includeTlsDomains` | `false` | Also publish routers' `tls.domains` (main and SANs; wildcards skipped) |
+| `traefikApi.includeTcpRouters` | `false` | Also publish TCP routers' `HostSNI` names (always DNS-only) |
 | `traefikApi.url` | `http://127.0.0.1:8080/api` | Traefik API base URL |
 | `traefikApi.username` / `password` | — | Basic auth for the API |
 | `traefikApi.insecureSkipVerify` | `false` | For an `https` API URL with a self-signed cert |
@@ -153,11 +166,15 @@ temp.example.com no longer served; A 203.0.113.10 will be deleted in 15m0s
 | `cloudflare.zones` | all visible | Allow-list of zone names |
 | `cloudflare.accountId` | — | Account owning the tunnel (needed to manage ingress) |
 | `cloudflare.instanceId` | `traefik` | Ownership marker; use different values for several Traefik hosts on one account |
+| `ddns.ipv4` | `true` | Publish `A` records |
+| `ddns.ipv6` | `false` | Publish `AAAA` records |
 | `ddns.ipSources` | ipify, AWS, ifconfig.me | Plain-text public-IPv4 URLs, tried in order |
-| `ddns.staticIp` | — | Use this IPv4 instead of detecting it |
+| `ddns.ipv6Sources` | api6.ipify.org, v6.ident.me | Plain-text public-IPv6 URLs, tried in order |
+| `ddns.staticIp` / `staticIpv6` | — | Use this address instead of detecting it |
 | `ddns.ipInterval` | `5m` | How often to re-detect the public IP (min `30s`) |
 | `ddns.proxied` | `true` | Cloudflare proxy (orange cloud) on records |
 | `ddns.ttl` | `1` (auto) | TTL for unproxied records (`30`–`86400`) |
+| `ddns.dnsOnlyEntryPoints` | — | Entrypoints whose hosts are published without the proxy (grey cloud) |
 | `tunnel.id` | — | Tunnel UUID; required when any entrypoint uses `tunnel` |
 | `tunnel.manageIngress` | `true` | Maintain the tunnel's public-hostname rules (remotely-managed tunnels) |
 | `tunnel.service` | — | Where cloudflared sends traffic, e.g. `http://traefik:8081` |

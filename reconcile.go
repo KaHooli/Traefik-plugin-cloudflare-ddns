@@ -74,7 +74,8 @@ type planInput struct {
 	Discovered int
 	Zones      []zone
 	Records    map[string][]dnsRecord // by zone ID
-	IP         string
+	IP         string                 // public IPv4; empty when unknown or disabled
+	IP6        string                 // public IPv6; empty when unknown or disabled
 	Now        time.Time
 	// MissingSince tracks when owned hosts were first seen missing. The
 	// planner updates it in place.
@@ -122,12 +123,7 @@ func plan(in planInput, s *settings) planResult {
 		records := in.Records[z.ID]
 
 		if t.Mode == modeDDNS {
-			ttl := s.ttl
-			if s.proxied {
-				ttl = 1
-			}
-			desired := dnsRecord{Type: "A", Name: t.Host, Content: in.IP, Proxied: s.proxied, TTL: ttl, Comment: comment}
-			res.Actions = append(res.Actions, planRecord(t.Host, z, records, desired, s)...)
+			res.Actions = append(res.Actions, planDDNS(t, z, records, in.IP, in.IP6, comment, s)...)
 			continue
 		}
 
@@ -166,6 +162,34 @@ func plan(in planInput, s *settings) planResult {
 	return res
 }
 
+// planDDNS plans the A and/or AAAA record of a DDNS host. A family whose
+// address is unknown (detection failed) is left as it is. If either family
+// is blocked by a foreign record, the host is skipped as a whole.
+func planDDNS(t target, z zone, records []dnsRecord, ip, ip6, comment string, s *settings) []action {
+	proxied := s.proxied && !t.DNSOnly
+	ttl := s.ttl
+	if proxied {
+		ttl = 1
+	}
+	var wanted []dnsRecord
+	if s.ipv4 && ip != "" {
+		wanted = append(wanted, dnsRecord{Type: "A", Name: t.Host, Content: ip, Proxied: proxied, TTL: ttl, Comment: comment})
+	}
+	if s.ipv6 && ip6 != "" {
+		wanted = append(wanted, dnsRecord{Type: "AAAA", Name: t.Host, Content: ip6, Proxied: proxied, TTL: ttl, Comment: comment})
+	}
+
+	var actions []action
+	for _, desired := range wanted {
+		acts := planRecord(t.Host, z, records, desired, s)
+		if hasSkip(acts) {
+			return acts
+		}
+		actions = append(actions, acts...)
+	}
+	return actions
+}
+
 // planRecord plans one host's record. Records of the desired type are kept or
 // updated; owned records of a conflicting type (after a mode change) are
 // deleted; any foreign record in the way makes the host a skip.
@@ -180,10 +204,13 @@ func planRecord(host string, z zone, records []dnsRecord, desired dnsRecord, s *
 		owned := isOwned(r, s.instanceID)
 
 		if r.Type == desired.Type {
-			adoptable := s.adopt && (desired.Type == "A" || strings.EqualFold(r.Content, desired.Content))
+			// Address records can be taken over; a CNAME only if it already
+			// points at the tunnel.
+			canAdopt := desired.Type != "CNAME" || strings.EqualFold(r.Content, desired.Content)
+			adoptable := s.adopt && canAdopt
 			if !owned && !adoptable {
 				hint := ""
-				if desired.Type == "A" || strings.EqualFold(r.Content, desired.Content) {
+				if canAdopt {
 					hint = "; set adopt: true to take it over"
 				}
 				return []action{{Kind: actSkip, Host: host, Zone: z,
@@ -193,10 +220,10 @@ func planRecord(host string, z zone, records []dnsRecord, desired dnsRecord, s *
 			continue
 		}
 
-		if !conflicts(desired.Type, r.Type) {
+		if !conflicts(desired.Type, r.Type, s) {
 			continue
 		}
-		if !owned || (desired.Type == "A" && r.Type == "AAAA") {
+		if !owned {
 			who := "foreign"
 			if owned {
 				who = "managed"
@@ -235,15 +262,21 @@ func planRecord(host string, z zone, records []dnsRecord, desired dnsRecord, s *
 	return actions
 }
 
-// conflicts reports whether a record of type other blocks the desired type
-// at the same name. A CNAME can't share a name with anything; an A record
-// only conflicts with a CNAME, and with AAAA records (IPv6 isn't managed yet,
-// so an AAAA next to the A would point somewhere else).
-func conflicts(desired, other string) bool {
-	if desired == "CNAME" || other == "CNAME" {
+// conflicts reports whether a record of type other is in the way of the
+// desired type at the same name. A CNAME can't share a name with anything.
+// A and AAAA coexist when both families are managed; when one family is off,
+// a record of that family would send clients somewhere else, so an owned one
+// is removed and a foreign one blocks the host.
+func conflicts(desired, other string, s *settings) bool {
+	switch {
+	case desired == "CNAME" || other == "CNAME":
 		return true
+	case desired == "A" && other == "AAAA":
+		return !s.ipv6
+	case desired == "AAAA" && other == "A":
+		return !s.ipv4
 	}
-	return desired == "A" && other == "AAAA"
+	return false
 }
 
 func hasOwned(records []dnsRecord, desired dnsRecord, instanceID string) bool {

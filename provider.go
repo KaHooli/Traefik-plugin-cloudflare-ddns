@@ -29,6 +29,7 @@ type Provider struct {
 
 	lastSummary   string
 	ip            string
+	ip6           string
 	ipCheckedAt   time.Time
 	lastState     string
 	lastReconcile time.Time
@@ -129,7 +130,7 @@ func (p *Provider) run(ctx context.Context) {
 // be read; Cloudflare problems are logged and retried on the next tick.
 func (p *Provider) tick(ctx context.Context) error {
 	reqCtx, cancel := context.WithTimeout(ctx, p.settings.timeout)
-	routers, err := p.api.listHTTPRouters(reqCtx)
+	routers, err := p.api.listRouters(reqCtx, p.settings.tcpRouters)
 	cancel()
 	if err != nil {
 		return err
@@ -154,16 +155,14 @@ func (p *Provider) tick(ctx context.Context) error {
 		}
 	}
 	if needIP {
-		if err := p.refreshIP(ctx); err != nil {
-			p.logf("error: %v", err)
-			if p.ip == "" {
-				return nil
-			}
+		p.refreshIP(ctx)
+		if p.ip == "" && p.ip6 == "" {
+			return nil // nothing to publish DDNS hosts with yet
 		}
 	}
 
 	now := p.now()
-	state := stateKey(p.ip, targets)
+	state := stateKey(p.ip+"/"+p.ip6, targets)
 	due := state != p.lastState || !p.lastOK ||
 		now.Sub(p.lastReconcile) >= p.settings.verifyInterval ||
 		p.pruneDue(now)
@@ -178,29 +177,57 @@ func (p *Provider) tick(ctx context.Context) error {
 	return nil
 }
 
-func (p *Provider) refreshIP(ctx context.Context) error {
-	if p.settings.staticIP != "" {
-		p.ip = p.settings.staticIP
-		return nil
+// refreshIP updates the public addresses of the enabled families. Detection
+// errors are logged; the last known address is kept until a new one is found.
+func (p *Provider) refreshIP(ctx context.Context) {
+	st := p.settings
+	if st.ipv4 && st.staticIP != "" {
+		p.ip = st.staticIP
 	}
+	if st.ipv6 && st.staticIP6 != "" {
+		p.ip6 = st.staticIP6
+	}
+	detect4 := st.ipv4 && st.staticIP == ""
+	detect6 := st.ipv6 && st.staticIP6 == ""
+	if !detect4 && !detect6 {
+		return
+	}
+
 	now := p.now()
-	if p.ip != "" && now.Sub(p.ipCheckedAt) < p.settings.ipInterval {
-		return nil
-	}
-	ip, err := detectPublicIPv4(ctx, p.ipClient, p.settings.ipSources)
-	if err != nil {
-		return err
+	known := (!detect4 || p.ip != "") && (!detect6 || p.ip6 != "")
+	if known && now.Sub(p.ipCheckedAt) < st.ipInterval {
+		return
 	}
 	p.ipCheckedAt = now
-	if ip != p.ip {
-		if p.ip == "" {
-			p.logf("public IPv4 is %s", ip)
+
+	if detect4 {
+		ip, err := detectPublicIPv4(ctx, p.ipClient, st.ipSources)
+		if err != nil {
+			p.logf("error: %v", err)
 		} else {
-			p.logf("public IPv4 changed: %s -> %s", p.ip, ip)
+			p.setIP("IPv4", &p.ip, ip)
 		}
-		p.ip = ip
 	}
-	return nil
+	if detect6 {
+		ip, err := detectPublicIPv6(ctx, p.ipClient, st.ip6Sources)
+		if err != nil {
+			p.logf("error: %v", err)
+		} else {
+			p.setIP("IPv6", &p.ip6, ip)
+		}
+	}
+}
+
+func (p *Provider) setIP(family string, current *string, ip string) {
+	if ip == *current {
+		return
+	}
+	if *current == "" {
+		p.logf("public %s is %s", family, ip)
+	} else {
+		p.logf("public %s changed: %s -> %s", family, *current, ip)
+	}
+	*current = ip
 }
 
 // pruneDue reports whether a pending deletion's grace period has run out.
@@ -254,12 +281,13 @@ func (p *Provider) reconcile(ctx context.Context, targets []target, discovered i
 		Zones:        zones,
 		Records:      records,
 		IP:           p.ip,
+		IP6:          p.ip6,
 		Now:          now,
 		MissingSince: p.missingSince,
 	}
 
 	var tcfg *tunnelConfig
-	if p.settings.manageIngress && p.settings.usesMode(modeTunnel) {
+	if p.settings.ingressManaged() {
 		p.checkTunnel(ctx)
 		tcfg, err = p.cf.getTunnelConfig(ctx, p.settings.accountID, p.settings.tunnelID)
 		if err != nil {
@@ -351,6 +379,9 @@ func stateKey(ip string, targets []target) string {
 	b.WriteString(ip)
 	for _, t := range targets {
 		b.WriteString("|" + t.Host + "=" + t.Mode + ">" + t.Service + t.Conflict)
+		if t.DNSOnly {
+			b.WriteString("(dns-only)")
+		}
 	}
 	return b.String()
 }
@@ -364,6 +395,9 @@ func formatSummary(routerCount int, targets []target, skipped []string) string {
 			mode = "conflict"
 		}
 		fmt.Fprintf(&b, "\n  %-6s %s <- %s", mode, t.Host, strings.Join(t.Routers, ", "))
+		if t.DNSOnly {
+			b.WriteString(" [dns-only]")
+		}
 	}
 	if len(skipped) > 0 {
 		fmt.Fprintf(&b, "\n  skipped non-literal matchers in: %s", strings.Join(skipped, ", "))

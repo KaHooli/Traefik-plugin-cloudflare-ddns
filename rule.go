@@ -2,15 +2,22 @@ package cfsync
 
 import "strings"
 
-// extractHosts returns the literal hostnames used in Host() matchers of a
-// Traefik router rule. It handles both v2 (Host(`a`, `b`)) and v3
-// (Host(`a`) || Host(`b`)) syntax, and backtick or double-quoted arguments.
-// HostRegexp, HostSNI and wildcard hosts are ignored. The second return value
-// reports whether anything was skipped, so callers can log it.
+// extractHosts returns the literal hostnames used in Host() matchers of an
+// HTTP router rule. See extractMatcherHosts.
+func extractHosts(rule string) ([]string, bool) {
+	return extractMatcherHosts(rule, "Host")
+}
+
+// extractMatcherHosts returns the literal hostnames used in the given matcher
+// ("Host" for HTTP routers, "HostSNI" for TCP routers). It handles both v2
+// (Host(`a`, `b`)) and v3 (Host(`a`) || Host(`b`)) syntax, and backtick or
+// double-quoted arguments. Regexp matchers, other host matchers and wildcard
+// hosts are ignored. The second return value reports whether anything was
+// skipped, so callers can log it.
 //
 // Do not use named results here or in other plugin code: under Yaegi they
 // keep their value from the previous call (see docs/spike-results.md).
-func extractHosts(rule string) ([]string, bool) {
+func extractMatcherHosts(rule, matcher string) ([]string, bool) {
 	var hosts []string
 	skipped := false
 	seen := make(map[string]bool)
@@ -33,21 +40,22 @@ func extractHosts(rule string) ([]string, bool) {
 		}
 		i = next
 
-		switch name {
-		case "Host":
-			for _, a := range args {
-				h := normalizeHost(a)
-				if h == "" {
-					skipped = true
-					continue
-				}
-				if !seen[h] {
-					seen[h] = true
-					hosts = append(hosts, h)
-				}
+		if name != matcher {
+			if isHostMatcher(name) {
+				skipped = true // another kind of host matcher, e.g. HostRegexp
 			}
-		case "HostRegexp", "HostSNI", "HostSNIRegexp":
-			skipped = true
+			continue
+		}
+		for _, a := range args {
+			h := normalizeHost(a)
+			if h == "" {
+				skipped = true
+				continue
+			}
+			if !seen[h] {
+				seen[h] = true
+				hosts = append(hosts, h)
+			}
 		}
 	}
 	return hosts, skipped
@@ -107,4 +115,12 @@ func normalizeHost(h string) string {
 		return ""
 	}
 	return h
+}
+
+func isHostMatcher(name string) bool {
+	switch name {
+	case "Host", "HostRegexp", "HostSNI", "HostSNIRegexp":
+		return true
+	}
+	return false
 }

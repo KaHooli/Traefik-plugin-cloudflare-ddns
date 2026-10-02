@@ -46,6 +46,9 @@ type target struct {
 	Routers []string
 	// Service is the tunnel ingress service for tunnel-mode hosts.
 	Service string
+	// DNSOnly publishes a DDNS host without the Cloudflare proxy: it is used
+	// by a TCP router, or one of its entrypoints is in ddns.dnsOnlyEntryPoints.
+	DNSOnly bool
 	// Conflict is set when the host's entrypoints map to different modes; the
 	// host is then left untouched.
 	Conflict string
@@ -82,8 +85,14 @@ func resolveTargets(hosts []discoveredHost, s *settings) []target {
 			t.Mode = modeNone
 			t.Conflict = "entrypoints map to different modes: " + strings.Join(names, ", ")
 		}
-		if t.Mode == modeTunnel {
+		switch {
+		case t.Mode == modeTunnel && h.TCP:
+			t.Mode = modeNone
+			t.Conflict = "TCP routers can't be published through a tunnel (HTTP only)"
+		case t.Mode == modeTunnel:
 			t.Service = serviceFor(h.EntryPoints, s)
+		case t.Mode == modeDDNS:
+			t.DNSOnly = h.TCP || anyIn(h.EntryPoints, s.dnsOnlyEPs)
 		}
 		out = append(out, t)
 	}

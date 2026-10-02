@@ -373,9 +373,16 @@ README.md  LICENSE
   switching of owned records. Ingress ownership comes from the owned CNAME, so it needs no
   extra state.
 
-**Phase 3: Hardening & extras**
-- IPv6/AAAA as an opt-in (off by default; not needed by the original deployment), CNAME anchor, batch API, per-entrypoint `proxied`, TLS domains, TCP routers,
-  status endpoint.
+**Phase 3: Hardening & extras**: ✅ done
+- Opt-in IPv6 (`AAAA`, with an `ipv4` switch for IPv6-only hosts); a family whose
+  detection fails is left alone.
+- `ddns.dnsOnlyEntryPoints` (grey cloud per entrypoint).
+- TCP routers' `HostSNI` names (always DNS-only; tunnel mode refused) and routers'
+  `tls.domains`, both opt-in.
+- Tunnel rules stay managed while a tunnel is configured, so they are cleaned up even after
+  tunnel mode is removed from every entrypoint.
+- Deferred (not needed at current scale): CNAME anchor and batch API (fewer API calls on IP
+  change), status endpoint (a provider plugin can't serve HTTP itself; logs cover it).
 
 **Phase 4: Publish**
 - `.traefik.yml` with valid `testData`, GitHub topic `traefik-plugin`, semver tag
