@@ -59,6 +59,16 @@ Both passed `go test` and failed only under `yaegi test`, which is why CI runs b
    Fix: send a stdlib type such as `json.RawMessage`. This matters in Phase 3 if the plugin
    ever publishes a status router.
 
+3. **`fmt` does not call `String()` on interpreted types** (found in Phase 1). `%s` on a
+   plugin type with a `String()` method prints interpreter internals
+   (`{%!s(*interp.node=...)}`) instead. **Rule: call such methods explicitly**
+   (`a.describe()`), and don't name them `String` so it's clear they won't be called
+   implicitly.
+
+4. **Method values of compiled types can't be passed as `func()`** in test code:
+   `t.Cleanup(srv.Close)` fails with `cannot use type func(*httptest.Server) as type func()`.
+   Use `t.Cleanup(func() { srv.Close() })`.
+
 ## Decisions for Phase 1
 
 - Keep the **provider plugin** approach; the sidecar fallback is not needed.

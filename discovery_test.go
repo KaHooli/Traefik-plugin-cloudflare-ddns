@@ -37,7 +37,7 @@ func TestListHTTPRoutersPaginates(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := CreateConfig()
+	cfg := testConfig()
 	cfg.TraefikAPI.URL = srv.URL + "/api/"
 	cfg.TraefikAPI.Username = "user"
 	cfg.TraefikAPI.Password = "pass"
@@ -61,7 +61,7 @@ func TestListHTTPRoutersError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := CreateConfig()
+	cfg := testConfig()
 	cfg.TraefikAPI.URL = srv.URL
 	s, err := cfg.validate()
 	if err != nil {
@@ -95,7 +95,7 @@ func TestCollectHosts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := CreateConfig()
+			cfg := testConfig()
 			cfg.EntryPoints = tt.entryPoints
 			cfg.Providers = tt.providers
 			s, err := cfg.validate()
@@ -116,7 +116,7 @@ func TestCollectHosts(t *testing.T) {
 		})
 	}
 
-	s, _ := CreateConfig().validate()
+	s, _ := testConfig().validate()
 	hosts, _ := collectHosts(routers, s)
 	if !reflect.DeepEqual(hosts[0].Routers, []string{"app-alt@file", "app@docker"}) {
 		t.Errorf("routers for app.example.com = %v", hosts[0].Routers)
@@ -126,7 +126,7 @@ func TestCollectHosts(t *testing.T) {
 // Regression test for a Yaegi bug: named result variables keep their value
 // between calls, so repeated polls returned ever-growing host lists.
 func TestCollectHostsRepeatable(t *testing.T) {
-	s, err := CreateConfig().validate()
+	s, err := testConfig().validate()
 	if err != nil {
 		t.Fatal(err)
 	}

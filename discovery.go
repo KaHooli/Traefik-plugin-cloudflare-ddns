@@ -22,10 +22,12 @@ type router struct {
 	EntryPoints []string `json:"entryPoints"`
 }
 
-// discoveredHost is a hostname together with the routers that use it.
+// discoveredHost is a hostname together with the routers that use it and
+// the union of those routers' entrypoints.
 type discoveredHost struct {
-	Host    string
-	Routers []string
+	Host        string
+	Routers     []string
+	EntryPoints []string
 }
 
 const maxPages = 100
@@ -102,6 +104,7 @@ func collectHosts(routers []router, s *settings) ([]discoveredHost, []string) {
 	var hosts []discoveredHost
 	var skippedRouters []string
 	byHost := make(map[string][]string)
+	entryPoints := make(map[string]map[string]bool)
 
 	for _, r := range routers {
 		if r.Status != "" && r.Status != "enabled" {
@@ -124,12 +127,23 @@ func collectHosts(routers []router, s *settings) ([]discoveredHost, []string) {
 		}
 		for _, h := range found {
 			byHost[h] = append(byHost[h], r.Name)
+			if entryPoints[h] == nil {
+				entryPoints[h] = make(map[string]bool)
+			}
+			for _, ep := range r.EntryPoints {
+				entryPoints[h][ep] = true
+			}
 		}
 	}
 
 	for h, rs := range byHost {
 		sort.Strings(rs)
-		hosts = append(hosts, discoveredHost{Host: h, Routers: rs})
+		var eps []string
+		for ep := range entryPoints[h] {
+			eps = append(eps, ep)
+		}
+		sort.Strings(eps)
+		hosts = append(hosts, discoveredHost{Host: h, Routers: rs, EntryPoints: eps})
 	}
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].Host < hosts[j].Host })
 	sort.Strings(skippedRouters)

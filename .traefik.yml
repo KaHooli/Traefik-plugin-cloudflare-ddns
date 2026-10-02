@@ -5,6 +5,13 @@ basePkg: cfsync
 summary: Publish Traefik router hostnames to Cloudflare as DDNS records or Tunnel routes, across multiple zones.
 
 testData:
+  dryRun: true
   pollInterval: 30s
   traefikApi:
     url: http://127.0.0.1:8080/api
+  entryPointModes:
+    tunnel: tunnel
+  exclude:
+    - mail.example.com
+  cloudflare:
+    apiToken: CHANGE_ME

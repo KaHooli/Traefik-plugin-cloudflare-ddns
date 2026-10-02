@@ -28,9 +28,16 @@ providers:
 
   plugin:
     cfsync:
-      pollInterval: 30s
+      dryRun: true                # remove once the logged changes look right
       traefikApi:
         url: http://127.0.0.1:8080/api
+      # Entrypoints not listed here use defaultMode (ddns).
+      entryPointModes:
+        tunnel: tunnel            # published via Cloudflare Tunnel (Phase 2)
+      exclude:
+        - "mail.example.com"      # never touched, even if a router uses it
+      cloudflare:
+        apiTokenFile: /run/secrets/cf_api_token
 
 experimental:
   localPlugins:

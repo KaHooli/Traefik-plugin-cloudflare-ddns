@@ -19,9 +19,10 @@ Requirements from the brief:
 |---|---|---|
 | R1 | Hostnames from Docker container labels | Read from Traefik's API (`/api/http/routers`), which already contains Docker-provider routers |
 | R2 | Hostnames from Traefik's file config, including defaults | The same API call returns file-provider routers, and routers whose rule came from `defaultRule` appear with the rule already filled in |
-| R3 | DDNS **and** tunnel | Each hostname is assigned a *target mode* (`ddns` / `tunnel`) by matching rules |
+| R3 | DDNS **and** tunnel | Each hostname is assigned a *target mode* (`ddns` / `tunnel`) from the entrypoints its routers use |
 | R4 | Several zones/TLDs in one Cloudflare account | Zones are found automatically by longest-suffix match over every zone the token can see |
 | R5 | Skip some subdomains that already point somewhere else | An explicit `exclude` list, **and** an ownership marker so the plugin never overwrites a record it did not create |
+| R6 | Remove subdomains for the target that are no longer needed | `prune` (on by default) deletes records this instance created once their host has been gone for `pruneGrace` |
 
 ## 2. Lessons from the reference plugin
 
@@ -104,7 +105,7 @@ providers:
 | `config.go` | Config struct, defaults, validation, `apiTokenFile` loading |
 | `discovery.go` | Traefik API client, pagination, router → host list |
 | `rule.go` | Parse `Host()` / `HostRegexp()` out of rule strings (v2 and v3 syntax) |
-| `match.go` | Glob matching for include/exclude/mode rules |
+| `match.go` | Glob matching for `exclude`, entrypoint → mode resolution |
 | `publicip.go` | IPv4/IPv6 detection with fallback sources |
 | `cloudflare.go` | Minimal REST client: zones, DNS records, tunnel config (stdlib `net/http` only) |
 | `reconcile.go` | Desired vs. actual diff, ownership checks, dry-run |
@@ -150,7 +151,7 @@ Fallback/alternative source (phase 3, optional): talk to the Docker socket direc
 (`unix:///var/run/docker.sock`) to read **custom per-container labels** such as
 `cfsync.mode=tunnel` / `cfsync.skip=true`. Traefik's API does not expose arbitrary labels,
 so this is the only way to get per-container metadata. Until then, per-host behaviour is
-driven by glob rules in the plugin config.
+driven by entrypoint modes and `exclude` in the plugin config.
 
 ## 4. Cloudflare behaviour
 
@@ -195,26 +196,21 @@ Required token permissions:
 `Zone:Read`, `DNS:Edit` (all zones, or the specific zones), and for tunnel ingress
 `Account: Cloudflare Tunnel:Edit`.
 
-### 4.4 Mode selection
+### 4.4 Mode selection (decided: by entrypoint)
 
-Ordered rules; first match wins; fallback is `defaultMode`:
+Each entrypoint maps to a mode; entrypoints not listed use `defaultMode`:
 
 ```yaml
 defaultMode: ddns            # ddns | tunnel | none
-rules:
-  - match: "*.internal.example.com"
-    mode: none               # discovered but never published
-  - entryPoints: [tunnel]    # routers on a dedicated "tunnel" entrypoint
-    mode: tunnel
-  - match: "*.example.net"
-    mode: tunnel
-  - match: "vpn.example.com"
-    mode: ddns
-    proxied: false           # e.g. non-HTTP services must not be orange-clouded
+entryPointModes:
+  tunnel: tunnel             # put tunnel-only services on a dedicated entrypoint
+  lan: none                  # discovered but never published
 ```
 
-Matching on `entryPoints` is useful: put tunnel-only services on their own entrypoint and the
-plugin works out the mode with no per-host config.
+A host takes the mode of the entrypoints its routers use. If those entrypoints map to
+**different** modes (e.g. one router on `websecure`, another on `tunnel`), the host is
+logged as a conflict and left untouched. Hostname-pattern rules and per-container labels
+were considered and not chosen; `exclude` still covers per-host opt-outs.
 
 ### 4.5 Skipping & ownership safety (R5)
 
@@ -230,15 +226,22 @@ Two layers, so a mistake in one doesn't damage existing DNS:
 2. **Ownership guard** (on by default, `adopt: false`): if a record with that name already
    exists **without** the plugin's `managed-by` comment and with a different
    type/content, the plugin **leaves it alone** and logs `skipped: foreign record`.
-   - `adopt: true` (global or per rule) lets the plugin take over records it didn't create,
+   - `adopt: true` lets the plugin take over records it didn't create,
      and adds the comment.
    - A `CNAME` and an `A` cannot coexist for the same name. The guard also stops a
      DDNS↔tunnel mode switch from breaking a foreign record.
 
-**Deletion** (`prune: false` by default): when enabled, records carrying this instance's
-`managed-by` comment whose host has disappeared from Traefik for longer than `pruneGrace`
-(default 1h) are deleted. Owned tunnel ingress rules are removed the same way. The
-`instanceId` in the comment lets several Traefik hosts share one Cloudflare account safely.
+**Deletion (R6)** (`prune: true` by default): records carrying this instance's
+`managed-by` comment are deleted once their host has been gone from Traefik, or moved to
+mode `none`, for longer than `pruneGrace` (default 15m). Safeguards:
+- only owned records are deleted; `exclude` matches and foreign records never are
+- the grace period covers container restarts and Traefik loading providers at startup
+  (a partial router list), and restarts from zero when Traefik restarts
+- nothing is pruned while discovery returns no hosts at all
+- hosts on tunnel entrypoints and conflicting hosts are kept
+
+Owned tunnel ingress rules will be removed the same way (Phase 2). The `instanceId` in the
+comment lets several Traefik hosts share one Cloudflare account safely.
 
 ### 4.6 API efficiency & rate limits
 
@@ -296,11 +299,11 @@ providers:
         noTLSVerify: false
 
       defaultMode: ddns
-      rules: []                # see §4.4
+      entryPointModes: {}      # see §4.4
       exclude: []              # see §4.5
       adopt: false
-      prune: false
-      pruneGrace: 1h
+      prune: true
+      pruneGrace: 15m
 ```
 
 `.traefik.yml` manifest:
@@ -346,22 +349,24 @@ README.md  LICENSE
 
 ## 7. Delivery phases
 
-**Phase 0: Spike (½ day)**
+**Phase 0: Spike (½ day)**: ✅ done, see `docs/spike-results.md`
 - Minimal provider plugin in local mode (`experimental.localPlugins`, mounted at
   `/plugins-local/src/github.com/...`) that logs the router list from the API.
 - Confirm: Yaegi runs `net/http` + goroutines in a provider; the loopback API is reachable;
   behaviour when `Provide` sends no configuration.
 
-**Phase 1: MVP DDNS (R1, R2, R4, R5)**
-- Discovery + rule parsing + include/exclude + zone index + A-record reconcile + ownership
-  guard + dry-run. Unit tests with `httptest`, CI including `yaegi test`.
+**Phase 1: MVP DDNS (R1, R2, R4, R5, R6)**: ✅ done
+- Discovery + rule parsing + entrypoint modes + exclude + zone index + A-record reconcile +
+  ownership guard + prune with grace period + `apiTokenFile` + dry-run. Unit, fake-API
+  end-to-end and Yaegi tests; verified inside Traefik v3.7.13 against a stand-in Cloudflare API.
 
 **Phase 2: Tunnel mode (R3)**
-- Mode rules, CNAME to `cfargotunnel.com`, remote ingress merge, docs for local tunnels.
+- CNAME to `cfargotunnel.com`, remote ingress merge, docs for local tunnels, and safe
+  DDNS↔tunnel switching of owned records.
 
 **Phase 3: Hardening & extras**
-- `prune` with grace period, IPv6/AAAA, CNAME anchor, batch API, `apiTokenFile`, TLS
-  domains, TCP routers, optional Docker-socket label metadata, status endpoint.
+- IPv6/AAAA, CNAME anchor, batch API, per-entrypoint `proxied`, TLS domains, TCP routers,
+  status endpoint.
 
 **Phase 4: Publish**
 - `.traefik.yml` with valid `testData`, GitHub topic `traefik-plugin`, semver tag
@@ -383,8 +388,8 @@ README.md  LICENSE
 | Topic | Notes |
 |---|---|
 | Provider plugin maturity | Provider plugins are less widely used than middleware. Phase 0 checks this early; the fallback is shipping the same code as a small sidecar binary (`cmd/cfsync`) that reads the same API. |
-| Secrets in static config | Traefik's static file config does not expand `${VARS}`. Prefer `apiTokenFile` (Docker secret), or set the token through Traefik's own `TRAEFIK_PROVIDERS_PLUGIN_...` env vars / CLI flags. |
-| Proxied vs. DNS-only | Orange-cloud breaks non-HTTP(S) ports. Default `proxied: true` for HTTP routers, overridable per rule. |
+| Secrets in static config | Traefik's static file config does not expand `${VARS}`, and env vars/CLI flags are ignored when a config file is used (verified). Use `apiTokenFile` (Docker secret). |
+| Proxied vs. DNS-only | Orange-cloud breaks non-HTTP(S) ports. Default `proxied: true` for HTTP routers, global `ddns.proxied` for now; per-entrypoint override planned for Phase 3. |
 | Multiple Traefik instances | `instanceId` in the comment keeps them from pruning each other's records. |
 | Status visibility | Optionally expose a small JSON status via a dynamic router (`/cfsync/status`), or log only. |
 
@@ -396,7 +401,6 @@ README.md  LICENSE
    would be a small extra feature (`mirrorZones`).
 2. **Tunnel type:** is your tunnel **remotely managed** (dashboard/API) or **locally
    managed** (`config.yml`)? This decides whether Phase 2 includes ingress management.
-3. **DDNS vs. tunnel split:** would you choose by **entrypoint**, by **hostname pattern**, or
-   do you need **per-container labels** (which pulls the Docker-socket source into an earlier phase)?
-4. **Prune:** should removing a container eventually delete its DNS record, or never delete?
+3. ~~DDNS vs. tunnel split~~: **by entrypoint** (decided).
+4. ~~Prune~~: **yes**, records no longer needed are removed (decided, R6).
 5. **IPv6:** do you need `AAAA` records?

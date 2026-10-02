@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,16 +39,48 @@ func TestConfigValidation(t *testing.T) {
 		func(c *Config) { c.PollInterval = "soon" },
 		func(c *Config) { c.TraefikAPI.URL = "127.0.0.1:8080/api" },
 		func(c *Config) { c.TraefikAPI.Timeout = "x" },
+		func(c *Config) { c.Cloudflare.APIToken = "" },
+		func(c *Config) { c.Cloudflare.APITokenFile = "/nonexistent" },
+		func(c *Config) { c.DefaultMode = "dns" },
+		func(c *Config) { c.EntryPointModes = map[string]string{"web": "proxy"} },
+		func(c *Config) { c.DDNS.StaticIP = "2001:db8::1" },
+		func(c *Config) { c.DDNS.TTL = 5 },
+		func(c *Config) { c.DDNS.IPInterval = "1s" },
+		func(c *Config) { c.VerifyInterval = "10s" },
+		func(c *Config) { c.PruneGrace = "-1m" },
+		func(c *Config) { c.Cloudflare.InstanceID = "a b" },
 	}
 	for i, mutate := range bad {
-		c := CreateConfig()
+		c := testConfig()
 		mutate(c)
 		if _, err := New(context.Background(), c, "test"); err == nil {
 			t.Errorf("case %d: expected error", i)
 		}
 	}
-	if _, err := New(context.Background(), CreateConfig(), "test"); err != nil {
+	if _, err := New(context.Background(), testConfig(), "test"); err != nil {
 		t.Errorf("default config: %v", err)
+	}
+
+	// With every mode "none" the plugin only logs, so no token is needed.
+	c := CreateConfig()
+	c.DefaultMode = modeNone
+	if _, err := New(context.Background(), c, "test"); err != nil {
+		t.Errorf("mode none without token: %v", err)
+	}
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c = CreateConfig()
+	c.Cloudflare.APITokenFile = tokenFile
+	s, err := c.validate()
+	if err != nil || s.cfToken != "from-file" {
+		t.Errorf("token file: token=%q err=%v", s.cfToken, err)
+	}
+	c.Cloudflare.APIToken = "also-set"
+	if _, err := c.validate(); err == nil {
+		t.Error("expected error when both apiToken and apiTokenFile are set")
 	}
 }
 
@@ -63,8 +97,9 @@ func TestProviderLifecycle(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := CreateConfig()
+	cfg := testConfig()
 	cfg.TraefikAPI.URL = srv.URL
+	cfg.DefaultMode = modeNone // discovery only; Cloudflare is covered elsewhere
 	p, err := New(context.Background(), cfg, "test")
 	if err != nil {
 		t.Fatal(err)

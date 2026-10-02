@@ -1,3 +1,4 @@
 /plugins-local/
 /traefik
 *.tgz
+examples/cf_api_token.txt

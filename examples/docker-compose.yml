@@ -12,6 +12,8 @@ services:
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
       - ./dynamic:/etc/traefik/dynamic:ro
       - ..:/plugins-local/src/github.com/kahooli/traefik-plugin-cloudflare-ddns:ro
+    secrets:
+      - cf_api_token
 
   whoami:
     image: traefik/whoami
@@ -25,3 +27,7 @@ services:
     image: traefik/whoami
     labels:
       traefik.enable: "true"
+
+secrets:
+  cf_api_token:
+    file: ./cf_api_token.txt   # a Cloudflare API token with Zone:Read + DNS:Edit
