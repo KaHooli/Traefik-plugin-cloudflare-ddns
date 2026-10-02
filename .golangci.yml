@@ -1,0 +1,10 @@
+version: "2"
+
+linters:
+  enable:
+    - errorlint
+    - gosec
+    - misspell
+    - nonamedreturns   # named results misbehave under Yaegi (see docs/spike-results.md)
+    - revive
+    - unconvert

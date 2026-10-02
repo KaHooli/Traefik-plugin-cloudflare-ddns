@@ -1,0 +1,38 @@
+# Static configuration for trying the plugin in local mode.
+# The plugin source must be at ./plugins-local/src/github.com/kahooli/traefik-plugin-cloudflare-ddns
+# relative to Traefik's working directory (/ in the official image).
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+  # Serves the API on loopback only; the plugin runs inside Traefik and reads it here.
+  traefik:
+    address: "127.0.0.1:8080"
+
+api:
+  insecure: true
+
+log:
+  level: INFO
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+  docker:
+    exposedByDefault: false
+    # Routers without a rule label get this rule; the plugin sees the evaluated host.
+    defaultRule: "Host(`{{ normalize .Name }}.example.com`)"
+
+  plugin:
+    cfsync:
+      pollInterval: 30s
+      traefikApi:
+        url: http://127.0.0.1:8080/api
+
+experimental:
+  localPlugins:
+    cfsync:
+      moduleName: github.com/kahooli/traefik-plugin-cloudflare-ddns

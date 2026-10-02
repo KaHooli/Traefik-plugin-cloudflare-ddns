@@ -1,0 +1,14 @@
+http:
+  routers:
+    file-app:
+      rule: "Host(`files.example.com`) || Host(`files.example.net`)"
+      entryPoints: [websecure]
+      service: noop@internal
+    file-api:
+      rule: "Host(`api.example.org`) && PathPrefix(`/v1`)"
+      entryPoints: [web]
+      service: noop@internal
+    file-wildcard:
+      rule: "HostRegexp(`^.+\\.wild\\.example\\.com$`)"
+      entryPoints: [web]
+      service: noop@internal

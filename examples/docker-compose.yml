@@ -1,0 +1,27 @@
+# Local-mode demo: Traefik with the plugin mounted from this repository,
+# plus one container using an explicit rule and one relying on defaultRule.
+#   cd examples && docker compose up
+services:
+  traefik:
+    image: traefik:v3.7
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - ..:/plugins-local/src/github.com/kahooli/traefik-plugin-cloudflare-ddns:ro
+
+  whoami:
+    image: traefik/whoami
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.whoami.rule: Host(`whoami.example.com`)
+      traefik.http.routers.whoami.entrypoints: websecure
+
+  # No rule label: defaultRule produces Host(`blog.example.com`).
+  blog:
+    image: traefik/whoami
+    labels:
+      traefik.enable: "true"
