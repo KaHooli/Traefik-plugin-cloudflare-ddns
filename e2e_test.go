@@ -95,6 +95,9 @@ func newE2E(t *testing.T, mutate func(*Config)) *e2e {
 	c.DDNS.IPv6Sources = []string{ip6Srv.URL}
 	c.EntryPointModes = map[string]string{"tunnel": "tunnel", "lan": "none"}
 	c.Exclude = []string{"mail.example.com"}
+	// Most tests change the router list and expect pruning on the next tick; the
+	// settling behaviour has its own tests that set this back to the default.
+	c.PruneSettlePolls = 1
 	if mutate != nil {
 		mutate(c)
 	}

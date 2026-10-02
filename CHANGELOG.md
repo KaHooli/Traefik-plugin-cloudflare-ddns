@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-02
+
+### Fixed
+
+- A tunnel host at the zone apex is no longer skipped because of the zone's `MX`, `TXT`
+  or other non-address records. Cloudflare flattens a `CNAME` at the apex, so only `A`,
+  `AAAA` and `CNAME` records there still count as conflicts.
+- After a restart, Traefik can list only some routers for the first few polls; that no
+  longer schedules deletions for the rest. Missing hosts only start their `pruneGrace`
+  once the same host list has been seen `pruneSettlePolls` polls in a row (default 3).
+
+### Added
+
+- `pruneSettlePolls` setting (see above).
+
 ## [0.2.0] - 2026-10-02
 
 ### Added

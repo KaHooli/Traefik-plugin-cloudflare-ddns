@@ -36,6 +36,10 @@ type Provider struct {
 	lastOK        bool
 	missingSince  map[string]time.Time
 	tunnelChecked bool
+	// hostsKey and stablePolls track how many polls in a row discovered the
+	// same hosts; pruning waits until the list has settled.
+	hostsKey    string
+	stablePolls int
 }
 
 // New creates the provider. Called by Traefik.
@@ -138,6 +142,7 @@ func (p *Provider) tick(ctx context.Context) error {
 
 	hosts, skipped := collectHosts(routers, p.settings)
 	targets := resolveTargets(hosts, p.settings)
+	settled := p.trackSettling(hosts)
 
 	if summary := formatSummary(len(routers), targets, skipped); summary != p.lastSummary {
 		p.lastSummary = summary
@@ -165,15 +170,17 @@ func (p *Provider) tick(ctx context.Context) error {
 	}
 
 	now := p.now()
-	state := stateKey(p.ip+"/"+p.ip6, targets)
+	// Including the settled flag reconciles once more when the list settles,
+	// so hosts that went missing start their grace period then.
+	state := stateKey(p.ip+"/"+p.ip6, targets) + fmt.Sprintf("|settled=%t", settled)
 	due := state != p.lastState || !p.lastOK ||
 		now.Sub(p.lastReconcile) >= p.settings.verifyInterval ||
-		p.pruneDue(now)
+		(settled && p.pruneDue(now))
 	if !due {
 		return nil
 	}
 
-	ok := p.reconcile(ctx, targets, len(hosts), now)
+	ok := p.reconcile(ctx, targets, len(hosts), now, !settled)
 	p.lastState = state
 	p.lastReconcile = now
 	p.lastOK = ok
@@ -233,6 +240,24 @@ func (p *Provider) setIP(family string, current *string, ip string) {
 	*current = ip
 }
 
+// trackSettling counts the polls in a row that discovered the same hosts and
+// reports whether the list has settled enough for pruning.
+func (p *Provider) trackSettling(hosts []discoveredHost) bool {
+	var b strings.Builder
+	for _, h := range hosts {
+		b.WriteString(h.Host)
+		b.WriteString(" ")
+	}
+	key := b.String()
+	if key == p.hostsKey {
+		p.stablePolls++
+	} else {
+		p.hostsKey = key
+		p.stablePolls = 1
+	}
+	return p.stablePolls >= p.settings.settlePolls
+}
+
 // pruneDue reports whether a pending deletion's grace period has run out.
 func (p *Provider) pruneDue(now time.Time) bool {
 	for _, since := range p.missingSince {
@@ -245,7 +270,7 @@ func (p *Provider) pruneDue(now time.Time) bool {
 
 // reconcile reads Cloudflare, plans and applies changes. It reports whether
 // everything succeeded.
-func (p *Provider) reconcile(ctx context.Context, targets []target, discovered int, now time.Time) bool {
+func (p *Provider) reconcile(ctx context.Context, targets []target, discovered int, now time.Time, pruneHold bool) bool {
 	allZones, err := p.cf.listZones(ctx)
 	if err != nil {
 		p.logf("error: list zones: %v", err)
@@ -287,6 +312,7 @@ func (p *Provider) reconcile(ctx context.Context, targets []target, discovered i
 		IP6:          p.ip6,
 		Now:          now,
 		MissingSince: p.missingSince,
+		PruneHold:    pruneHold,
 	}
 
 	var tcfg *tunnelConfig
