@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-02
+
+### Added
+
+- `adoptFrom`: a list of `CNAME` targets (for example the zone apex) whose `CNAME`s the
+  plugin may take over. They are repointed in place (to the tunnel, or replaced by an
+  `A`/`AAAA` record for DDNS hosts) and marked as owned. This migrates an existing
+  "every subdomain is a `CNAME` to the apex" setup without deleting records by hand.
+
+### Changed
+
+- `adopt: true` now also replaces a foreign `A`/`AAAA` record with the tunnel `CNAME` for
+  tunnel-mode hosts (previously such a host was skipped).
+- Skip messages for foreign records now say how to take them over (`adopt` or
+  `adoptFrom`) when that is possible.
+
 ## [0.1.0] - 2026-10-02
 
 First release.

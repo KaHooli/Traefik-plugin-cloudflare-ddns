@@ -37,8 +37,14 @@ are no longer needed.
    - Hosts matching `exclude` are never touched.
    - Records are only changed or deleted if they carry this instance's marker comment
      (`managed-by=cfsync instance=<instanceId>`). An existing record pointing somewhere
-     else is left alone and logged. `adopt: true` takes over existing `A` records and
-     `CNAME`s that already point at the tunnel; anything else is never replaced.
+     else is left alone and logged, with a hint when it can be taken over:
+     - `adopt: true` takes over existing address records (`A`/`AAAA`), replacing them
+       with the tunnel `CNAME` for tunnel hosts, and `CNAME`s that already point at the
+       tunnel.
+     - `adoptFrom: [example.com]` takes over `CNAME`s pointing at the listed targets,
+       repointing them in place. This is for migrating a "every subdomain is a `CNAME` to
+       the apex" setup; see [Migrating existing records](#migrating-existing-records).
+     - Anything else (for example a `CNAME` to another service) is never replaced.
    - An existing tunnel rule for the host that differs from what the plugin would write
      also blocks the host (unless `adopt: true`).
    - Changing a host's mode (moving its router to another entrypoint) swaps the `A` record
@@ -143,6 +149,29 @@ create CNAME app.example.com -> 6ff42ae2-....cfargotunnel.com (proxied=true) [zo
 temp.example.com no longer served; A 203.0.113.10 will be deleted in 15m0s
 ```
 
+## Migrating existing records
+
+A common hand-made setup is one `A` record on the apex (kept current by some DDNS tool)
+and a `CNAME` to the apex for every subdomain. To move all of those hosts behind a tunnel
+instead:
+
+```yaml
+providers:
+  plugin:
+    cfsync:
+      dryRun: true                     # check the plan first
+      defaultMode: tunnel
+      adoptFrom: ["example.com"]       # CNAMEs pointing here are repointed to the tunnel
+      adopt: true                      # stray A/AAAA records are replaced too
+      exclude:
+        - "plex.example.com"           # hosts that must stay direct keep their records
+```
+
+Each matching `CNAME` is updated in place to `<tunnel-id>.cfargotunnel.com` and gets the
+ownership marker, so DNS never has a gap and the plugin manages it (and prunes it) from
+then on. `CNAME`s pointing anywhere else, and excluded hosts, are untouched. Excluded hosts
+still rely on the apex `A` record, so keep whatever updates it running.
+
 ## Configuration
 
 | Option | Default | Description |
@@ -153,7 +182,8 @@ temp.example.com no longer served; A 203.0.113.10 will be deleted in 15m0s
 | `defaultMode` | `ddns` | Mode for entrypoints not in `entryPointModes` |
 | `entryPointModes` | — | Map of entrypoint → `ddns` / `tunnel` / `none` |
 | `exclude` | — | Hostname globs (`*` matches across dots) never touched |
-| `adopt` | `false` | Take over existing `A` records, `CNAME`s to the tunnel, and differing tunnel rules |
+| `adopt` | `false` | Take over existing `A`/`AAAA` records, `CNAME`s to the tunnel, and differing tunnel rules |
+| `adoptFrom` | — | `CNAME` targets whose `CNAME`s may be taken over and repointed (e.g. your zone apex) |
 | `prune` | `true` | Delete owned records whose host is gone |
 | `pruneGrace` | `15m` | How long a host must be gone before deletion |
 | `entryPoints` / `providers` | all | Only *discover* routers on these entrypoints / from these providers |

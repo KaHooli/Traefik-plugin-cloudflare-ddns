@@ -244,10 +244,10 @@ func TestPlanTunnel(t *testing.T) {
 		expect(t, got, "update t.example.com "+testTarget)
 	})
 
-	t.Run("foreign CNAME elsewhere is never adopted", func(t *testing.T) {
+	t.Run("foreign CNAME elsewhere is not adopted by adopt alone", func(t *testing.T) {
 		rec := foreign("CNAME", "t.example.com", "other.example.org")
 		_, got := runTunnelPlan(t, func(c *Config) { c.Adopt = true }, planInput{Targets: tunnelTargets("t.example.com"), Records: map[string][]dnsRecord{"z1": {rec}}})
-		expect(t, got, "skip t.example.com: foreign CNAME record exists (-> other.example.org)")
+		expect(t, got, "skip t.example.com: foreign CNAME record exists (-> other.example.org); add other.example.org to adoptFrom to take it over")
 	})
 
 	t.Run("any foreign record blocks a CNAME", func(t *testing.T) {

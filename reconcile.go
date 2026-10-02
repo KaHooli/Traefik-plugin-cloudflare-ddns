@@ -204,17 +204,13 @@ func planRecord(host string, z zone, records []dnsRecord, desired dnsRecord, s *
 		owned := isOwned(r, s.instanceID)
 
 		if r.Type == desired.Type {
-			// Address records can be taken over; a CNAME only if it already
-			// points at the tunnel.
-			canAdopt := desired.Type != "CNAME" || strings.EqualFold(r.Content, desired.Content)
-			adoptable := s.adopt && canAdopt
-			if !owned && !adoptable {
-				hint := ""
-				if canAdopt {
-					hint = "; set adopt: true to take it over"
-				}
+			// Address records can be taken over with adopt; a CNAME only if it
+			// already points at the tunnel, or at a target listed in adoptFrom.
+			canAdopt := desired.Type != "CNAME" || sameTarget(r.Content, desired.Content)
+			mayTake := owned || (s.adopt && canAdopt) || adoptsFrom(r, s)
+			if !mayTake {
 				return []action{{Kind: actSkip, Host: host, Zone: z,
-					Reason: fmt.Sprintf("foreign %s record exists (-> %s)%s", r.Type, r.Content, hint)}}
+					Reason: fmt.Sprintf("foreign %s record exists (-> %s)%s", r.Type, r.Content, adoptHint(r, desired, s))}}
 			}
 			mine = append(mine, r)
 			continue
@@ -223,16 +219,15 @@ func planRecord(host string, z zone, records []dnsRecord, desired dnsRecord, s *
 		if !conflicts(desired.Type, r.Type, s) {
 			continue
 		}
-		if !owned {
-			who := "foreign"
-			if owned {
-				who = "managed"
-			}
+		if !owned && !takesOver(r, desired, s) {
 			return []action{{Kind: actSkip, Host: host, Zone: z,
-				Reason: fmt.Sprintf("%s %s record exists (-> %s)", who, r.Type, r.Content)}}
+				Reason: fmt.Sprintf("foreign %s record exists (-> %s)%s", r.Type, r.Content, adoptHint(r, desired, s))}}
 		}
-		deletes = append(deletes, action{Kind: actDelete, Host: host, Zone: z, Record: r,
-			Reason: "replaced by " + desired.Type + " (mode changed)"})
+		reason := "replaced by " + desired.Type + " (mode changed)"
+		if !owned {
+			reason = "replaced by " + desired.Type + " (adopted)"
+		}
+		deletes = append(deletes, action{Kind: actDelete, Host: host, Zone: z, Record: r, Reason: reason})
 	}
 
 	if len(mine) == 0 {
@@ -260,6 +255,38 @@ func planRecord(host string, z zone, records []dnsRecord, desired dnsRecord, s *
 		actions = append(actions, action{Kind: actUpdate, Host: host, Zone: z, Record: next, Old: kept})
 	}
 	return actions
+}
+
+// adoptsFrom reports whether r is a foreign CNAME whose target is listed in
+// adoptFrom, so it may be taken over.
+func adoptsFrom(r dnsRecord, s *settings) bool {
+	return r.Type == "CNAME" && s.adoptFrom[normalizeTarget(r.Content)]
+}
+
+// takesOver reports whether a foreign record of another type may be deleted
+// to make way for the desired record: a CNAME listed in adoptFrom, or (with
+// adopt) an address record in the way of a tunnel CNAME.
+func takesOver(r, desired dnsRecord, s *settings) bool {
+	if adoptsFrom(r, s) {
+		return true
+	}
+	return s.adopt && desired.Type == "CNAME" && (r.Type == "A" || r.Type == "AAAA")
+}
+
+// adoptHint tells the user how to let the plugin take over a foreign record
+// that blocks a host, when there is a way.
+func adoptHint(r, desired dnsRecord, s *settings) string {
+	switch {
+	case r.Type == "CNAME" && !sameTarget(r.Content, desired.Content):
+		return "; add " + normalizeTarget(r.Content) + " to adoptFrom to take it over"
+	case !s.adopt && (r.Type == desired.Type || (desired.Type == "CNAME" && (r.Type == "A" || r.Type == "AAAA"))):
+		return "; set adopt: true to take it over"
+	}
+	return ""
+}
+
+func sameTarget(a, b string) bool {
+	return normalizeTarget(a) == normalizeTarget(b)
 }
 
 // conflicts reports whether a record of type other is in the way of the
