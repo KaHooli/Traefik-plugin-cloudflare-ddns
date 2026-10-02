@@ -11,7 +11,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
       - ./dynamic:/etc/traefik/dynamic:ro
-      - ..:/plugins-local/src/github.com/kahooli/traefik-plugin-cloudflare-ddns:ro
+      - ..:/plugins-local/src/github.com/KaHooli/Traefik-plugin-cloudflare-ddns:ro
     secrets:
       - cf_api_token
 

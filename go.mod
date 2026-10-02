@@ -1,3 +1,3 @@
-module github.com/kahooli/traefik-plugin-cloudflare-ddns
+module github.com/KaHooli/Traefik-plugin-cloudflare-ddns
 
 go 1.22

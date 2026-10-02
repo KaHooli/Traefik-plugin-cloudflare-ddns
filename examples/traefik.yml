@@ -1,5 +1,5 @@
 # Static configuration for trying the plugin in local mode.
-# The plugin source must be at ./plugins-local/src/github.com/kahooli/traefik-plugin-cloudflare-ddns
+# The plugin source must be at ./plugins-local/src/github.com/KaHooli/Traefik-plugin-cloudflare-ddns
 # relative to Traefik's working directory (/ in the official image).
 
 entryPoints:
@@ -57,4 +57,4 @@ providers:
 experimental:
   localPlugins:
     cfsync:
-      moduleName: github.com/kahooli/traefik-plugin-cloudflare-ddns
+      moduleName: github.com/KaHooli/Traefik-plugin-cloudflare-ddns

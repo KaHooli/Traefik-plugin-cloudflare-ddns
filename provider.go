@@ -144,7 +144,10 @@ func (p *Provider) tick(ctx context.Context) error {
 		p.logger.Print(summary)
 	}
 
-	if !p.settings.publishesAnything() {
+	// Nothing can change while no hosts are discovered: there is nothing to
+	// publish, and pruning is disabled on an empty result (it is more likely a
+	// partial API response than every service being gone).
+	if !p.settings.publishesAnything() || len(hosts) == 0 {
 		return nil
 	}
 

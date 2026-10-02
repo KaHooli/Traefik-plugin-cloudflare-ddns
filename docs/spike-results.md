@@ -72,8 +72,9 @@ Both passed `go test` and failed only under `yaegi test`, which is why CI runs b
 ## Decisions for Phase 1
 
 - Keep the **provider plugin** approach; the sidecar fallback is not needed.
-- Package name `cfsync` via `basePkg`; module path is lowercase
-  `github.com/kahooli/traefik-plugin-cloudflare-ddns`.
+- Package name `cfsync` via `basePkg`. (The module path was later changed in Phase 4 to
+  the repo's exact case, `github.com/KaHooli/Traefik-plugin-cloudflare-ddns`, which is what
+  the plugin catalog validates against.)
 - Stdlib-only, hand-written Cloudflare client (as planned).
 - Start with polling (`pollInterval`). Traefik's API has no change feed, so polling every
   15–30 s is cheap (one local request) and Cloudflare is only called when something changed.

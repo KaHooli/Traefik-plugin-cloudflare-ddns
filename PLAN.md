@@ -328,15 +328,15 @@ testData:
     apiToken: test
 ```
 
-> Note: the module path should be lowercase-friendly. Consider renaming the repo to
-> `traefik-plugin-cloudflare-ddns` (or using a lowercase module path) because the plugin
-> catalog and Go module proxies are case-sensitive.
+> Note: the module path matches the repo's exact case
+> (`github.com/KaHooli/Traefik-plugin-cloudflare-ddns`). The catalog validates `go.mod`
+> against the repository, and Go module proxies handle mixed case (escaped as `!k`).
 
 ## 6. Repository layout
 
 ```
 .traefik.yml
-go.mod                    # module github.com/kahooli/traefik-plugin-cloudflare-ddns, go 1.22+
+go.mod                    # module github.com/KaHooli/Traefik-plugin-cloudflare-ddns, go 1.22+
 provider.go  config.go  discovery.go  rule.go  match.go
 publicip.go  cloudflare.go  reconcile.go  tunnel.go
 *_test.go                 # table tests + httptest fakes for Traefik API & Cloudflare
@@ -384,9 +384,14 @@ README.md  LICENSE
 - Deferred (not needed at current scale): CNAME anchor and batch API (fewer API calls on IP
   change), status endpoint (a provider plugin can't serve HTTP itself; logs cover it).
 
-**Phase 4: Publish**
-- `.traefik.yml` with valid `testData`, GitHub topic `traefik-plugin`, semver tag
-  `v0.1.0`, and a README with icon/banner. The catalog picks it up automatically.
+**Phase 4: Publish**: ✅ prepared; the tag is pushed after merge
+- Apache-2.0 license; module path matching the repo's exact case; `CHANGELOG.md`.
+- CI job `catalog-smoke` loads the plugin in a real Traefik from `.traefik.yml`'s `testData`
+  and checks the manifest against `go.mod`.
+- `release.yml`: on a `vX.Y.Z` tag, re-runs the checks and publishes a GitHub release
+  from the CHANGELOG.
+- Left to the repo owner (see `docs/releasing.md`): the `traefik-plugin` topic, and pushing
+  the first tag after merging. An icon (`iconPath`) is optional.
 
 ## 8. Testing strategy
 

@@ -374,3 +374,13 @@ func TestEndToEndTunnelRulesCleanedAfterModeRemoved(t *testing.T) {
 	expect(t, e.tick(15*time.Minute), "tunnel put", "delete old.example.com "+testTarget)
 	expect(t, e.cf.ingress(), "<nil>=http_status:404")
 }
+
+func TestEndToEndNoHostsNoCloudflareCalls(t *testing.T) {
+	e := newE2E(t, func(c *Config) { c.Cloudflare.APIToken = "wrong" })
+	e.traefik.set()
+	e.tick(0)
+	e.tick(time.Hour)
+	if strings.Contains(e.out.String(), "error") {
+		t.Errorf("Cloudflare was called with no hosts discovered:\n%s", e.out.String())
+	}
+}

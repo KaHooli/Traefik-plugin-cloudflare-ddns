@@ -18,11 +18,11 @@ jobs:
     defaults:
       run:
         # Traefik loads plugins from a GOPATH layout, so Yaegi tests run in one too.
-        working-directory: ${{ github.workspace }}/go/src/github.com/kahooli/traefik-plugin-cloudflare-ddns
+        working-directory: ${{ github.workspace }}/go/src/github.com/KaHooli/Traefik-plugin-cloudflare-ddns
     steps:
       - uses: actions/checkout@v4
         with:
-          path: go/src/github.com/kahooli/traefik-plugin-cloudflare-ddns
+          path: go/src/github.com/KaHooli/Traefik-plugin-cloudflare-ddns
 
       - uses: actions/setup-go@v5
         with:
@@ -53,3 +53,21 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: latest
+
+  # Loads the plugin in a real Traefik with .traefik.yml's testData, the way
+  # the plugin catalog validates it.
+  catalog-smoke:
+    runs-on: ubuntu-latest
+    env:
+      TRAEFIK_VERSION: v3.7.13
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Traefik
+        run: |
+          curl -fsSL -o traefik.tgz "https://github.com/traefik/traefik/releases/download/${TRAEFIK_VERSION}/traefik_${TRAEFIK_VERSION}_linux_amd64.tar.gz"
+          mkdir -p "$RUNNER_TEMP/traefik" && tar -xzf traefik.tgz -C "$RUNNER_TEMP/traefik" traefik
+          rm traefik.tgz
+      - name: Load plugin from testData
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 .github/scripts/catalog_smoke.py "$RUNNER_TEMP/traefik/traefik"

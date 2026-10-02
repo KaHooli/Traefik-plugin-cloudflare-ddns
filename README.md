@@ -7,8 +7,9 @@ pointing at your public IP (DDNS), or through a Cloudflare Tunnel, depending on 
 entrypoint its router uses. Records and tunnel routes it created are removed once they
 are no longer needed.
 
-> **Status:** DDNS (IPv4, optional IPv6) and Cloudflare Tunnel are implemented.
-> Publishing to the plugin catalog is next; see [PLAN.md](PLAN.md).
+> **Status:** feature-complete for v0.1.0 (DDNS with optional IPv6, Cloudflare Tunnel,
+> pruning). See [CHANGELOG.md](CHANGELOG.md), [PLAN.md](PLAN.md) for the design, and
+> [docs/releasing.md](docs/releasing.md) for publishing to the plugin catalog.
 
 ## How it decides what to do
 
@@ -98,8 +99,8 @@ e.g. with a wildcard rule. The plugin warns if it detects a locally-managed tunn
    experimental:
      plugins:
        cfsync:
-         moduleName: github.com/kahooli/traefik-plugin-cloudflare-ddns
-         version: v0.1.0   # once released; until then use localPlugins (below)
+         moduleName: github.com/KaHooli/Traefik-plugin-cloudflare-ddns
+         version: v0.1.0   # once published; until then use localPlugins (below)
 
    providers:
      plugin:
@@ -123,7 +124,7 @@ e.g. with a wildcard rule. The plugin warns if it detects a locally-managed tunn
    `traefik.http.routers.app.entrypoints=tunnel`) to publish it through the tunnel.
 
    For local development, mount this repository at
-   `/plugins-local/src/github.com/kahooli/traefik-plugin-cloudflare-ddns` and use
+   `/plugins-local/src/github.com/KaHooli/Traefik-plugin-cloudflare-ddns` and use
    `experimental.localPlugins.cfsync.moduleName` instead.
    [`examples/`](examples) has a complete `docker-compose.yml`.
 
@@ -192,9 +193,16 @@ variables are ignored when you use a config file. Prefer `apiTokenFile` with a D
 go test -race ./...
 # Traefik runs plugins in the Yaegi interpreter; always also run:
 go install github.com/traefik/yaegi/cmd/yaegi@v0.16.1
-# from a GOPATH layout: $GOPATH/src/github.com/kahooli/traefik-plugin-cloudflare-ddns
+# from a GOPATH layout: $GOPATH/src/github.com/KaHooli/Traefik-plugin-cloudflare-ddns
 GO111MODULE=off yaegi test -v .
 ```
 
 Yaegi behaves differently from Go in a few ways that matter here. See
 [docs/spike-results.md](docs/spike-results.md#yaegi-pitfalls-found).
+
+CI also runs `.github/scripts/catalog_smoke.py`, which loads the plugin in a real Traefik
+with `.traefik.yml`'s `testData`, the same way the plugin catalog does.
+
+## License
+
+[Apache License 2.0](LICENSE)
