@@ -15,3 +15,7 @@ testData:
     - mail.example.com
   cloudflare:
     apiToken: CHANGE_ME
+    accountId: 0123456789abcdef0123456789abcdef
+  tunnel:
+    id: 6ff42ae2-765d-4adf-8112-31c55c1551ef
+    service: http://traefik:8081

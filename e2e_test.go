@@ -118,7 +118,8 @@ func TestEndToEnd(t *testing.T) {
 	)
 
 	got := e.tick(0)
-	expect(t, got, "create app.example.com 203.0.113.10", "create app.example.net 203.0.113.10")
+	expect(t, got, "tunnel put", "create app.example.com 203.0.113.10", "create app.example.net 203.0.113.10",
+		"create tun.example.com "+testTarget)
 	if !strings.Contains(e.out.String(), "foreign A record exists (-> 192.0.2.50)") {
 		t.Errorf("legacy skip not logged:\n%s", e.out.String())
 	}
@@ -144,7 +145,7 @@ func TestEndToEnd(t *testing.T) {
 	if !strings.Contains(e.out.String(), "app.example.net no longer served") {
 		t.Errorf("pending deletion not logged:\n%s", e.out.String())
 	}
-	expect(t, e.tick(15*time.Minute), "delete app.example.net 203.0.113.99")
+	expect(t, e.tick(15*time.Minute), "tunnel put", "delete tun.example.com "+testTarget, "delete app.example.net 203.0.113.99")
 	if len(e.p.missingSince) != 0 {
 		t.Errorf("still tracking pruned hosts: %v", e.p.missingSince)
 	}
@@ -190,4 +191,92 @@ func TestEndToEndCloudflareErrorRetries(t *testing.T) {
 	}
 	e.p.cf.token = "test-token"
 	expect(t, e.tick(30*time.Second), "create app.example.com 203.0.113.10")
+}
+
+func TestEndToEndTunnel(t *testing.T) {
+	e := newE2E(t, func(c *Config) {
+		c.EntryPointModes["tunnel-tls"] = "tunnel"
+		c.Tunnel.EntryPointServices = map[string]string{"tunnel-tls": "https://traefik:8443"}
+	})
+	e.cf.setIngress(
+		`{"hostname":"ssh.example.com","service":"ssh://localhost:22"}`,
+		`{"hostname":"*.example.net","service":"http://other:80"}`,
+		`{"service":"http_status:404"}`,
+	)
+	e.traefik.set(
+		rt("t1@docker", "tunnel", "Host(`t1.example.com`)"),
+		rt("t2@file", "tunnel-tls", "Host(`t2.example.net`)"),
+		rt("web@docker", "websecure", "Host(`web.example.com`)"),
+	)
+
+	expect(t, e.tick(0), "tunnel put",
+		"create t1.example.com "+testTarget, "create t2.example.net "+testTarget, "create web.example.com 203.0.113.10")
+	expect(t, e.cf.ingress(),
+		"ssh.example.com=ssh://localhost:22",
+		"t1.example.com=http://traefik:8081",
+		`t2.example.net=https://traefik:8443 {"originServerName":"t2.example.net"}`,
+		"*.example.net=http://other:80",
+		"<nil>=http_status:404")
+	if !strings.Contains(e.out.String(), `tunnel "home"`) {
+		t.Errorf("tunnel check not logged:\n%s", e.out.String())
+	}
+
+	// A full verify must not rewrite anything (Cloudflare adds originRequest: {}).
+	expect(t, e.tick(time.Hour))
+
+	// The other top-level settings survive the write.
+	e.cf.mu.Lock()
+	warp := string(e.cf.tunnelConfig["warp-routing"])
+	e.cf.mu.Unlock()
+	if warp != `{"enabled":false}` {
+		t.Errorf("warp-routing = %s", warp)
+	}
+
+	// t1 moves to a DDNS entrypoint: rule removed, CNAME replaced by A.
+	e.traefik.set(
+		rt("t1@docker", "websecure", "Host(`t1.example.com`)"),
+		rt("t2@file", "tunnel-tls", "Host(`t2.example.net`)"),
+		rt("web@docker", "websecure", "Host(`web.example.com`)"),
+	)
+	expect(t, e.tick(30*time.Second), "tunnel put", "delete t1.example.com "+testTarget, "create t1.example.com 203.0.113.10")
+	if strings.Contains(strings.Join(e.cf.ingress(), " "), "t1.example.com") {
+		t.Errorf("t1 rule not removed: %v", e.cf.ingress())
+	}
+
+	// t2 goes away: kept during the grace period, then removed with its CNAME.
+	// The first removal attempt fails, so the CNAME must be kept for the retry.
+	e.traefik.set(
+		rt("t1@docker", "websecure", "Host(`t1.example.com`)"),
+		rt("web@docker", "websecure", "Host(`web.example.com`)"),
+	)
+	expect(t, e.tick(30*time.Second))
+	if !strings.Contains(strings.Join(e.cf.ingress(), " "), "t2.example.net") {
+		t.Error("t2 rule removed during the grace period")
+	}
+	e.cf.mu.Lock()
+	e.cf.failPut = true
+	e.cf.mu.Unlock()
+	expect(t, e.tick(15*time.Minute))
+	e.cf.mu.Lock()
+	e.cf.failPut = false
+	e.cf.mu.Unlock()
+	expect(t, e.tick(30*time.Second), "tunnel put", "delete t2.example.net "+testTarget)
+	expect(t, e.cf.ingress(),
+		"ssh.example.com=ssh://localhost:22",
+		"*.example.net=http://other:80",
+		"<nil>=http_status:404")
+}
+
+func TestEndToEndTunnelDryRun(t *testing.T) {
+	e := newE2E(t, func(c *Config) { c.DryRun = true })
+	e.traefik.set(rt("t1@docker", "tunnel", "Host(`t1.example.com`)"))
+	expect(t, e.tick(0))
+	for _, want := range []string{
+		"[dry-run] tunnel ingress: add t1.example.com -> http://traefik:8081",
+		"[dry-run] create CNAME t1.example.com -> " + testTarget,
+	} {
+		if !strings.Contains(e.out.String(), want) {
+			t.Errorf("missing %q in log:\n%s", want, e.out.String())
+		}
+	}
 }

@@ -79,65 +79,124 @@ type planInput struct {
 	// MissingSince tracks when owned hosts were first seen missing. The
 	// planner updates it in place.
 	MissingSince map[string]time.Time
+	// Ingress is the tunnel's current ingress list; IngressLoaded is false
+	// when ingress isn't managed.
+	Ingress       []ingressRule
+	IngressLoaded bool
+}
+
+// planResult is the outcome of planning: DNS actions, and the ingress
+// changes when tunnel ingress is managed (nil otherwise).
+type planResult struct {
+	Actions []action
+	Ingress *ingressPlan
 }
 
 // plan computes the changes needed to make Cloudflare match the targets.
-func plan(in planInput, s *settings) []action {
-	var actions []action
+func plan(in planInput, s *settings) planResult {
+	var res planResult
+	if in.IngressLoaded {
+		res.Ingress = newIngressPlan()
+	}
 	comment := ownerComment(s.instanceID)
 
-	// Hosts whose owned records must not be pruned: DDNS hosts, plus tunnel
-	// and conflicting hosts, which later phases (or the user) will resolve.
+	// Hosts whose owned records must not be pruned.
 	keep := make(map[string]bool)
 
 	for _, t := range in.Targets {
 		switch {
 		case t.Conflict != "":
 			keep[t.Host] = true
-			actions = append(actions, action{Kind: actSkip, Host: t.Host, Reason: t.Conflict})
+			res.Actions = append(res.Actions, action{Kind: actSkip, Host: t.Host, Reason: t.Conflict})
 			continue
-		case t.Mode == modeTunnel:
-			keep[t.Host] = true
-			actions = append(actions, action{Kind: actSkip, Host: t.Host, Reason: "tunnel mode is not implemented yet"})
-			continue
-		case t.Mode != modeDDNS:
+		case t.Mode != modeDDNS && t.Mode != modeTunnel:
 			continue
 		}
 		keep[t.Host] = true
 
 		z, ok := zoneFor(t.Host, in.Zones)
 		if !ok {
-			actions = append(actions, action{Kind: actSkip, Host: t.Host, Reason: "no matching Cloudflare zone"})
+			res.Actions = append(res.Actions, action{Kind: actSkip, Host: t.Host, Reason: "no matching Cloudflare zone"})
 			continue
 		}
-		actions = append(actions, planDDNS(t.Host, z, in.Records[z.ID], in.IP, comment, s)...)
+		records := in.Records[z.ID]
+
+		if t.Mode == modeDDNS {
+			ttl := s.ttl
+			if s.proxied {
+				ttl = 1
+			}
+			desired := dnsRecord{Type: "A", Name: t.Host, Content: in.IP, Proxied: s.proxied, TTL: ttl, Comment: comment}
+			res.Actions = append(res.Actions, planRecord(t.Host, z, records, desired, s)...)
+			continue
+		}
+
+		// Tunnel mode.
+		desired := dnsRecord{Type: "CNAME", Name: t.Host, Content: s.tunnelTarget(), Proxied: true, TTL: 1, Comment: comment}
+		rule := desiredIngressRule(t.Host, t.Service, s)
+		if res.Ingress != nil {
+			existing, found := findHostRule(in.Ingress, t.Host)
+			if found && !rulesEqual(existing, rule) && !s.adopt && !hasOwned(records, desired, s.instanceID) {
+				res.Actions = append(res.Actions, action{Kind: actSkip, Host: t.Host, Zone: z,
+					Reason: fmt.Sprintf("tunnel ingress rule exists (-> %s); set adopt: true to take it over", existing.Service)})
+				continue
+			}
+		}
+		acts := planRecord(t.Host, z, records, desired, s)
+		res.Actions = append(res.Actions, acts...)
+		if res.Ingress != nil && !hasSkip(acts) {
+			res.Ingress.Want[t.Host] = rule
+		}
 	}
 
 	if s.prune {
-		actions = append(actions, planPrune(in, keep, s)...)
+		res.Actions = append(res.Actions, planPrune(in, keep, s)...)
 	}
-	return actions
+
+	// An ingress rule is removed only together with its host's tunnel CNAME,
+	// so rules for pending, excluded or conflicting hosts stay in place.
+	if res.Ingress != nil {
+		for _, a := range res.Actions {
+			if a.Kind == actDelete && a.Record.Type == "CNAME" &&
+				strings.EqualFold(a.Record.Content, s.tunnelTarget()) && !hasWant(res.Ingress, a.Host) {
+				res.Ingress.Remove[a.Host] = true
+			}
+		}
+	}
+	return res
 }
 
-func planDDNS(host string, z zone, records []dnsRecord, ip, comment string, s *settings) []action {
-	ttl := s.ttl
-	if s.proxied {
-		ttl = 1
-	}
-	desired := dnsRecord{Type: "A", Name: host, Content: ip, Proxied: s.proxied, TTL: ttl, Comment: comment}
-
+// planRecord plans one host's record. Records of the desired type are kept or
+// updated; owned records of a conflicting type (after a mode change) are
+// deleted; any foreign record in the way makes the host a skip.
+func planRecord(host string, z zone, records []dnsRecord, desired dnsRecord, s *settings) []action {
 	var mine []dnsRecord
+	var deletes []action
+
 	for _, r := range records {
 		if !strings.EqualFold(r.Name, host) {
 			continue
 		}
-		switch r.Type {
-		case "A", "AAAA", "CNAME":
-		default:
-			continue // TXT, MX etc. can coexist with an A record
-		}
 		owned := isOwned(r, s.instanceID)
-		if r.Type != "A" {
+
+		if r.Type == desired.Type {
+			adoptable := s.adopt && (desired.Type == "A" || strings.EqualFold(r.Content, desired.Content))
+			if !owned && !adoptable {
+				hint := ""
+				if desired.Type == "A" || strings.EqualFold(r.Content, desired.Content) {
+					hint = "; set adopt: true to take it over"
+				}
+				return []action{{Kind: actSkip, Host: host, Zone: z,
+					Reason: fmt.Sprintf("foreign %s record exists (-> %s)%s", r.Type, r.Content, hint)}}
+			}
+			mine = append(mine, r)
+			continue
+		}
+
+		if !conflicts(desired.Type, r.Type) {
+			continue
+		}
+		if !owned || (desired.Type == "A" && r.Type == "AAAA") {
 			who := "foreign"
 			if owned {
 				who = "managed"
@@ -145,15 +204,12 @@ func planDDNS(host string, z zone, records []dnsRecord, ip, comment string, s *s
 			return []action{{Kind: actSkip, Host: host, Zone: z,
 				Reason: fmt.Sprintf("%s %s record exists (-> %s)", who, r.Type, r.Content)}}
 		}
-		if !owned && !s.adopt {
-			return []action{{Kind: actSkip, Host: host, Zone: z,
-				Reason: fmt.Sprintf("foreign A record exists (-> %s); set adopt: true to take it over", r.Content)}}
-		}
-		mine = append(mine, r)
+		deletes = append(deletes, action{Kind: actDelete, Host: host, Zone: z, Record: r,
+			Reason: "replaced by " + desired.Type + " (mode changed)"})
 	}
 
 	if len(mine) == 0 {
-		return []action{{Kind: actCreate, Host: host, Zone: z, Record: desired}}
+		return append(deletes, action{Kind: actCreate, Host: host, Zone: z, Record: desired})
 	}
 
 	keepIdx := 0
@@ -164,7 +220,7 @@ func planDDNS(host string, z zone, records []dnsRecord, ip, comment string, s *s
 		}
 	}
 
-	var actions []action
+	actions := deletes
 	for i, r := range mine {
 		if i == keepIdx {
 			continue
@@ -179,8 +235,43 @@ func planDDNS(host string, z zone, records []dnsRecord, ip, comment string, s *s
 	return actions
 }
 
+// conflicts reports whether a record of type other blocks the desired type
+// at the same name. A CNAME can't share a name with anything; an A record
+// only conflicts with a CNAME, and with AAAA records (IPv6 isn't managed yet,
+// so an AAAA next to the A would point somewhere else).
+func conflicts(desired, other string) bool {
+	if desired == "CNAME" || other == "CNAME" {
+		return true
+	}
+	return desired == "A" && other == "AAAA"
+}
+
+func hasOwned(records []dnsRecord, desired dnsRecord, instanceID string) bool {
+	for _, r := range records {
+		if strings.EqualFold(r.Name, desired.Name) && r.Type == desired.Type &&
+			strings.EqualFold(r.Content, desired.Content) && isOwned(r, instanceID) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSkip(actions []action) bool {
+	for _, a := range actions {
+		if a.Kind == actSkip {
+			return true
+		}
+	}
+	return false
+}
+
+func hasWant(p *ingressPlan, host string) bool {
+	_, ok := p.Want[host]
+	return ok
+}
+
 func recordInSync(r, desired dnsRecord, instanceID string) bool {
-	if r.Content != desired.Content || r.Proxied != desired.Proxied || !isOwned(r, instanceID) {
+	if !strings.EqualFold(r.Content, desired.Content) || r.Proxied != desired.Proxied || !isOwned(r, instanceID) {
 		return false
 	}
 	// Cloudflare ignores TTL on proxied records.

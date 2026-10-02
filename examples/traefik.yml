@@ -7,6 +7,10 @@ entryPoints:
     address: ":80"
   websecure:
     address: ":443"
+  # Only reachable by cloudflared (not published as a port); routers on this
+  # entrypoint are published through the tunnel instead of DDNS.
+  tunnel:
+    address: ":8081"
   # Serves the API on loopback only; the plugin runs inside Traefik and reads it here.
   traefik:
     address: "127.0.0.1:8080"
@@ -33,11 +37,15 @@ providers:
         url: http://127.0.0.1:8080/api
       # Entrypoints not listed here use defaultMode (ddns).
       entryPointModes:
-        tunnel: tunnel            # published via Cloudflare Tunnel (Phase 2)
+        tunnel: tunnel            # published via Cloudflare Tunnel
       exclude:
         - "mail.example.com"      # never touched, even if a router uses it
       cloudflare:
         apiTokenFile: /run/secrets/cf_api_token
+        accountId: "<your-account-id>"
+      tunnel:
+        id: "<tunnel-uuid>"
+        service: http://traefik:8081   # the tunnel entrypoint, as cloudflared sees it
 
 experimental:
   localPlugins:

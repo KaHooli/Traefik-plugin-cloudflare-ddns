@@ -28,6 +28,21 @@ services:
     labels:
       traefik.enable: "true"
 
+  # Published through the tunnel because its router uses the "tunnel" entrypoint.
+  private:
+    image: traefik/whoami
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.private.rule: Host(`private.example.com`)
+      traefik.http.routers.private.entrypoints: tunnel
+
+  # Remotely-managed tunnel; its ingress rules are maintained by the plugin.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+
 secrets:
   cf_api_token:
     file: ./cf_api_token.txt   # a Cloudflare API token with Zone:Read + DNS:Edit

@@ -68,7 +68,7 @@ func runPlan(t *testing.T, mutate func(*Config), in planInput) []string {
 	if in.Discovered == 0 {
 		in.Discovered = len(in.Targets)
 	}
-	return summarize(plan(in, s))
+	return summarize(plan(in, s).Actions)
 }
 
 func expect(t *testing.T, got []string, want ...string) {
@@ -133,7 +133,7 @@ func TestPlanDDNS(t *testing.T) {
 			Targets: ddns("app.example.com"), Zones: []zone{zoneCom}, IP: "203.0.113.10", Now: testNow,
 			Records:      map[string][]dnsRecord{"z1": {foreign("A", "app.example.com", "192.0.2.7")}},
 			MissingSince: map[string]time.Time{},
-		}, s)
+		}, s).Actions
 		if len(actions) != 1 || actions[0].Kind != actUpdate || actions[0].Record.Comment != myComment {
 			t.Fatalf("got %+v", actions)
 		}
@@ -173,7 +173,7 @@ func TestPlanDDNS(t *testing.T) {
 			Targets: ddns("a.sub.example.com", "b.example.com", "c.example.net", "d.example.org"),
 			Zones:   []zone{zoneCom, zoneSub, zoneNet}, IP: "203.0.113.10", Now: testNow,
 			Records: map[string][]dnsRecord{}, MissingSince: map[string]time.Time{},
-		}, s)
+		}, s).Actions
 		got := make(map[string]string)
 		for _, a := range actions {
 			got[a.Host] = a.Kind + ":" + a.Zone.Name
@@ -191,15 +191,12 @@ func TestPlanDDNS(t *testing.T) {
 		}
 	})
 
-	t.Run("tunnel and conflict hosts are skipped", func(t *testing.T) {
+	t.Run("conflict and none hosts are not published", func(t *testing.T) {
 		got := runPlan(t, nil, planInput{Targets: []target{
-			{Host: "t.example.com", Mode: modeTunnel},
 			{Host: "m.example.com", Mode: modeNone, Conflict: "entrypoints map to different modes: ddns, tunnel"},
 			{Host: "n.example.com", Mode: modeNone},
 		}})
-		expect(t, got,
-			"skip t.example.com: tunnel mode is not implemented yet",
-			"skip m.example.com: entrypoints map to different modes: ddns, tunnel")
+		expect(t, got, "skip m.example.com: entrypoints map to different modes: ddns, tunnel")
 	})
 }
 
@@ -209,7 +206,7 @@ func TestPlanPrune(t *testing.T) {
 			owned("app.example.com", "203.0.113.10"),
 			owned("gone.example.com", "203.0.113.10"),
 			owned("mail.example.com", "203.0.113.10"),         // excluded
-			owned("tun.example.com", "203.0.113.10"),          // now tunnel mode
+			owned("tun.example.com", "203.0.113.10"),          // was ddns, now tunnel mode
 			owned("lan.example.com", "203.0.113.10"),          // now mode none
 			foreign("A", "other.example.com", "203.0.113.10"), // not ours
 		},
@@ -225,21 +222,23 @@ func TestPlanPrune(t *testing.T) {
 	missing := make(map[string]time.Time)
 	got := runPlan(t, exclude, planInput{Targets: targets, Records: records, MissingSince: missing})
 	expect(t, got,
-		"skip tun.example.com: tunnel mode is not implemented yet",
+		"delete tun.example.com 203.0.113.10",
+		"create tun.example.com "+testTarget,
 		"pending-delete gone.example.com 203.0.113.10",
 		"pending-delete lan.example.com 203.0.113.10",
 		"pending-delete old.example.net 203.0.113.10")
 
 	// Still within the grace period.
 	got = runPlan(t, exclude, planInput{Targets: targets, Records: records, MissingSince: missing, Now: testNow.Add(14 * time.Minute)})
-	if len(got) != 4 || !strings.HasPrefix(got[3], "pending-delete") {
+	if len(got) != 5 || !strings.HasPrefix(got[4], "pending-delete") {
 		t.Fatalf("within grace: %v", got)
 	}
 
 	// Grace period over.
 	got = runPlan(t, exclude, planInput{Targets: targets, Records: records, MissingSince: missing, Now: testNow.Add(15 * time.Minute)})
 	expect(t, got,
-		"skip tun.example.com: tunnel mode is not implemented yet",
+		"delete tun.example.com 203.0.113.10",
+		"create tun.example.com "+testTarget,
 		"delete gone.example.com 203.0.113.10",
 		"delete lan.example.com 203.0.113.10",
 		"delete old.example.net 203.0.113.10")
@@ -260,7 +259,7 @@ func TestPlanPrune(t *testing.T) {
 
 	t.Run("prune disabled", func(t *testing.T) {
 		got := runPlan(t, func(c *Config) { c.Prune = false }, planInput{Targets: targets, Records: records})
-		expect(t, got, "skip tun.example.com: tunnel mode is not implemented yet")
+		expect(t, got, "delete tun.example.com 203.0.113.10", "create tun.example.com "+testTarget)
 	})
 
 	t.Run("zero grace deletes immediately", func(t *testing.T) {

@@ -47,6 +47,8 @@ type Config struct {
 	Cloudflare CloudflareConfig `json:"cloudflare,omitempty" yaml:"cloudflare,omitempty"`
 	// DDNS holds settings for records pointing at the public IP.
 	DDNS DDNSConfig `json:"ddns,omitempty" yaml:"ddns,omitempty"`
+	// Tunnel holds settings for hosts published through Cloudflare Tunnel.
+	Tunnel TunnelConfig `json:"tunnel,omitempty" yaml:"tunnel,omitempty"`
 }
 
 // TraefikAPIConfig holds the connection settings for Traefik's API.
@@ -70,6 +72,8 @@ type CloudflareConfig struct {
 	APITokenFile string `json:"apiTokenFile,omitempty" yaml:"apiTokenFile,omitempty"`
 	// Zones is an allow-list of zone names. Empty = every zone the token can see.
 	Zones []string `json:"zones,omitempty" yaml:"zones,omitempty"`
+	// AccountID is the Cloudflare account that owns the tunnel (tunnel mode only).
+	AccountID string `json:"accountId,omitempty" yaml:"accountId,omitempty"`
 	// InstanceID marks records created by this Traefik instance. Default: traefik.
 	InstanceID string `json:"instanceId,omitempty" yaml:"instanceId,omitempty"`
 	// APIURL overrides the Cloudflare API base URL (for testing).
@@ -88,6 +92,25 @@ type DDNSConfig struct {
 	Proxied bool `json:"proxied" yaml:"proxied"`
 	// TTL in seconds for unproxied records; 1 means automatic. Default: 1.
 	TTL int `json:"ttl,omitempty" yaml:"ttl,omitempty"`
+}
+
+// TunnelConfig holds the settings for tunnel mode.
+type TunnelConfig struct {
+	// ID is the tunnel UUID. Hosts get a proxied CNAME to <id>.cfargotunnel.com.
+	ID string `json:"id,omitempty" yaml:"id,omitempty"`
+	// ManageIngress adds and removes the tunnel's public-hostname (ingress)
+	// rules through the API. Needs a remotely-managed tunnel. Default: true.
+	ManageIngress bool `json:"manageIngress" yaml:"manageIngress"`
+	// Service is where cloudflared sends traffic, i.e. Traefik's tunnel
+	// entrypoint as reachable from cloudflared (e.g. http://traefik:8081).
+	Service string `json:"service,omitempty" yaml:"service,omitempty"`
+	// EntryPointServices overrides Service per tunnel entrypoint.
+	EntryPointServices map[string]string `json:"entryPointServices,omitempty" yaml:"entryPointServices,omitempty"`
+	// OriginServerName sends the public hostname as TLS SNI to an https
+	// service, so Traefik picks the right certificate. Default: true.
+	OriginServerName bool `json:"originServerName" yaml:"originServerName"`
+	// NoTLSVerify disables certificate checks for an https service.
+	NoTLSVerify bool `json:"noTLSVerify,omitempty" yaml:"noTLSVerify,omitempty"`
 }
 
 // Modes a hostname can be published with.
@@ -137,6 +160,10 @@ func CreateConfig() *Config {
 			Proxied:    true,
 			TTL:        1,
 		},
+		Tunnel: TunnelConfig{
+			ManageIngress:    true,
+			OriginServerName: true,
+		},
 	}
 }
 
@@ -171,6 +198,32 @@ type settings struct {
 	ipInterval time.Duration
 	proxied    bool
 	ttl        int
+
+	accountID          string
+	tunnelID           string
+	manageIngress      bool
+	tunnelService      string
+	entryPointServices map[string]string
+	originServerName   bool
+	noTLSVerify        bool
+}
+
+// tunnelTarget is the CNAME target for tunnel-mode hosts.
+func (s *settings) tunnelTarget() string {
+	return s.tunnelID + ".cfargotunnel.com"
+}
+
+// usesMode reports whether any entrypoint (or the default) maps to mode.
+func (s *settings) usesMode(mode string) bool {
+	if s.defaultMode == mode {
+		return true
+	}
+	for _, m := range s.entryPointModes {
+		if m == mode {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Config) validate() (*settings, error) {
@@ -189,6 +242,13 @@ func (c *Config) validate() (*settings, error) {
 		zones:       toSet(c.Cloudflare.Zones),
 		proxied:     c.DDNS.Proxied,
 		ttl:         c.DDNS.TTL,
+
+		accountID:        strings.TrimSpace(c.Cloudflare.AccountID),
+		tunnelID:         strings.ToLower(strings.TrimSpace(c.Tunnel.ID)),
+		manageIngress:    c.Tunnel.ManageIngress,
+		tunnelService:    strings.TrimSpace(c.Tunnel.Service),
+		originServerName: c.Tunnel.OriginServerName,
+		noTLSVerify:      c.Tunnel.NoTLSVerify,
 	}
 
 	var err error
@@ -280,7 +340,80 @@ func (c *Config) validate() (*settings, error) {
 		return nil, fmt.Errorf("ddns.ttl must be 1 (auto) or 30-86400, got %d", s.ttl)
 	}
 
+	if err := s.validateTunnel(c.Tunnel.EntryPointServices); err != nil {
+		return nil, err
+	}
+
 	return s, nil
+}
+
+func (s *settings) validateTunnel(epServices map[string]string) error {
+	s.entryPointServices = make(map[string]string)
+	for ep, svc := range epServices {
+		ep = strings.ToLower(strings.TrimSpace(ep))
+		svc = strings.TrimSpace(svc)
+		if err := validateService(svc); err != nil {
+			return fmt.Errorf("tunnel.entryPointServices.%s: %w", ep, err)
+		}
+		if s.entryPointModes[ep] != modeTunnel && s.defaultMode != modeTunnel {
+			return fmt.Errorf("tunnel.entryPointServices.%s: entrypoint is not in tunnel mode", ep)
+		}
+		s.entryPointServices[ep] = svc
+	}
+
+	if !s.usesMode(modeTunnel) {
+		return nil
+	}
+	if !isUUID(s.tunnelID) {
+		return fmt.Errorf("tunnel.id must be the tunnel UUID when an entrypoint uses tunnel mode, got %q", s.tunnelID)
+	}
+	if !s.manageIngress {
+		return nil
+	}
+	if s.accountID == "" {
+		return errors.New("cloudflare.accountId is required to manage tunnel ingress (or set tunnel.manageIngress: false)")
+	}
+	if s.tunnelService == "" {
+		// Every tunnel entrypoint needs a service.
+		for ep, m := range s.entryPointModes {
+			if m == modeTunnel && s.entryPointServices[ep] == "" {
+				return fmt.Errorf("tunnel.service (or tunnel.entryPointServices.%s) is required to manage tunnel ingress", ep)
+			}
+		}
+		if s.defaultMode == modeTunnel {
+			return errors.New("tunnel.service is required when defaultMode is tunnel")
+		}
+		return nil
+	}
+	return validateService(s.tunnelService)
+}
+
+func validateService(svc string) error {
+	if !strings.HasPrefix(svc, "http://") && !strings.HasPrefix(svc, "https://") {
+		return fmt.Errorf("service must be an http:// or https:// URL, got %q", svc)
+	}
+	return nil
+}
+
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // publishesAnything reports whether any entrypoint can map to a mode that

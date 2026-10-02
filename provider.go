@@ -34,6 +34,7 @@ type Provider struct {
 	lastReconcile time.Time
 	lastOK        bool
 	missingSince  map[string]time.Time
+	tunnelChecked bool
 }
 
 // New creates the provider. Called by Traefik.
@@ -60,6 +61,9 @@ func (p *Provider) Init() error {
 	s := p.settings
 	p.logf("init: api=%s pollInterval=%s defaultMode=%s entryPointModes=%s prune=%t dryRun=%t",
 		s.apiURL, s.pollInterval, s.defaultMode, formatModes(s.entryPointModes), s.prune, s.dryRun)
+	if s.usesMode(modeTunnel) {
+		p.logf("init: tunnel=%s manageIngress=%t service=%s", s.tunnelID, s.manageIngress, s.tunnelService)
+	}
 	return nil
 }
 
@@ -222,10 +226,10 @@ func (p *Provider) reconcile(ctx context.Context, targets []target, discovered i
 		p.logf("warning: zones not visible to the API token: %s", strings.Join(missing, ", "))
 	}
 
-	// Without pruning, only zones containing a DDNS host need reading.
+	// Without pruning, only zones containing a published host need reading.
 	needed := make(map[string]bool)
 	for _, t := range targets {
-		if t.Mode == modeDDNS && t.Conflict == "" {
+		if (t.Mode == modeDDNS || t.Mode == modeTunnel) && t.Conflict == "" {
 			if z, ok := zoneFor(t.Host, zones); ok {
 				needed[z.ID] = true
 			}
@@ -244,7 +248,7 @@ func (p *Provider) reconcile(ctx context.Context, targets []target, discovered i
 		records[z.ID] = rs
 	}
 
-	actions := plan(planInput{
+	in := planInput{
 		Targets:      targets,
 		Discovered:   discovered,
 		Zones:        zones,
@@ -252,14 +256,90 @@ func (p *Provider) reconcile(ctx context.Context, targets []target, discovered i
 		IP:           p.ip,
 		Now:          now,
 		MissingSince: p.missingSince,
-	}, p.settings)
+	}
+
+	var tcfg *tunnelConfig
+	if p.settings.manageIngress && p.settings.usesMode(modeTunnel) {
+		p.checkTunnel(ctx)
+		tcfg, err = p.cf.getTunnelConfig(ctx, p.settings.accountID, p.settings.tunnelID)
+		if err != nil {
+			p.logf("error: read tunnel configuration: %v", err)
+			return false
+		}
+		in.Ingress = tcfg.Ingress
+		in.IngressLoaded = true
+	}
+
+	planned := plan(in, p.settings)
+	actions := planned.Actions
+
+	ingressOK := true
+	if planned.Ingress != nil {
+		ingressOK = p.applyIngress(ctx, tcfg, planned.Ingress)
+		if !ingressOK {
+			// Keep the CNAMEs whose rules couldn't be removed, so the next
+			// attempt still knows the rules are ours.
+			var kept []action
+			for _, a := range actions {
+				if a.Kind == actDelete && planned.Ingress.Remove[a.Host] {
+					continue
+				}
+				kept = append(kept, a)
+			}
+			actions = kept
+		}
+	}
 
 	res := p.apply(ctx, actions)
 	if res.Changed > 0 || res.Failed > 0 {
 		p.logf("reconcile: %d changed, %d failed, %d skipped, %d pending deletion",
 			res.Changed, res.Failed, res.Skipped, res.Pending)
 	}
-	return res.Failed == 0
+	return res.Failed == 0 && ingressOK
+}
+
+// applyIngress merges the planned rules into the tunnel configuration and
+// writes it when something changed. It reports whether that succeeded.
+func (p *Provider) applyIngress(ctx context.Context, cfg *tunnelConfig, ip *ingressPlan) bool {
+	merged, changes := mergeIngress(cfg.Ingress, ip)
+	if len(changes) == 0 {
+		return true
+	}
+	prefix := ""
+	if p.settings.dryRun {
+		prefix = "[dry-run] "
+	}
+	for _, c := range changes {
+		p.logf("%stunnel ingress: %s", prefix, c)
+	}
+	if p.settings.dryRun {
+		return true
+	}
+	if err := p.cf.putTunnelConfig(ctx, p.settings.accountID, p.settings.tunnelID, cfg, merged); err != nil {
+		p.logf("error: write tunnel configuration: %v", err)
+		return false
+	}
+	return true
+}
+
+// checkTunnel logs the tunnel's name and status once, and warns when the
+// tunnel is locally managed (cloudflared then ignores the remote ingress).
+func (p *Provider) checkTunnel(ctx context.Context) {
+	if p.tunnelChecked {
+		return
+	}
+	info, err := p.cf.getTunnel(ctx, p.settings.accountID, p.settings.tunnelID)
+	if err != nil {
+		p.logf("warning: could not read tunnel %s: %v", p.settings.tunnelID, err)
+		return
+	}
+	p.tunnelChecked = true
+	p.logf("tunnel %q (%s) status=%s", info.Name, p.settings.tunnelID, info.Status)
+	if (info.RemoteConfig != nil && !*info.RemoteConfig) || info.ConfigSrc == "local" {
+		p.logf("warning: tunnel %q is locally managed; cloudflared uses its config.yml, so ingress "+
+			"rules written by this plugin have no effect. Set tunnel.manageIngress: false and route "+
+			"hostnames to Traefik in config.yml instead", info.Name)
+	}
 }
 
 func (p *Provider) logf(format string, args ...any) {
@@ -270,7 +350,7 @@ func stateKey(ip string, targets []target) string {
 	var b strings.Builder
 	b.WriteString(ip)
 	for _, t := range targets {
-		b.WriteString("|" + t.Host + "=" + t.Mode + t.Conflict)
+		b.WriteString("|" + t.Host + "=" + t.Mode + ">" + t.Service + t.Conflict)
 	}
 	return b.String()
 }

@@ -44,6 +44,8 @@ type target struct {
 	Host    string
 	Mode    string
 	Routers []string
+	// Service is the tunnel ingress service for tunnel-mode hosts.
+	Service string
 	// Conflict is set when the host's entrypoints map to different modes; the
 	// host is then left untouched.
 	Conflict string
@@ -80,9 +82,23 @@ func resolveTargets(hosts []discoveredHost, s *settings) []target {
 			t.Mode = modeNone
 			t.Conflict = "entrypoints map to different modes: " + strings.Join(names, ", ")
 		}
+		if t.Mode == modeTunnel {
+			t.Service = serviceFor(h.EntryPoints, s)
+		}
 		out = append(out, t)
 	}
 	return out
+}
+
+// serviceFor picks the ingress service for a tunnel host: the first of its
+// entrypoints with an override, else tunnel.service.
+func serviceFor(entryPoints []string, s *settings) string {
+	for _, ep := range entryPoints {
+		if svc := s.entryPointServices[strings.ToLower(ep)]; svc != "" {
+			return svc
+		}
+	}
+	return s.tunnelService
 }
 
 func modeForEntryPoint(ep string, s *settings) string {

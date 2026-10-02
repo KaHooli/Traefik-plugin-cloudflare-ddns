@@ -12,10 +12,19 @@ import (
 	"testing"
 )
 
-// testConfig is CreateConfig with a token set, so validation passes.
+const (
+	testAccount = "acc1"
+	testTunnel  = "6ff42ae2-765d-4adf-8112-31c55c1551ef"
+	testTarget  = testTunnel + ".cfargotunnel.com"
+)
+
+// testConfig is CreateConfig with a token and tunnel set, so validation passes.
 func testConfig() *Config {
 	c := CreateConfig()
 	c.Cloudflare.APIToken = "test-token"
+	c.Cloudflare.AccountID = testAccount
+	c.Tunnel.ID = testTunnel
+	c.Tunnel.Service = "http://traefik:8081"
 	return c
 }
 
@@ -38,10 +47,16 @@ type fakeCloudflare struct {
 	nextID int
 	writes []string
 	srv    *httptest.Server
+
+	tunnel       map[string]any
+	tunnelConfig map[string]json.RawMessage
+	tunnelPuts   int
+	failPut      bool
 }
 
 func newFakeCloudflare(t *testing.T, zones ...zone) *fakeCloudflare {
-	f := &fakeCloudflare{t: t, zones: zones, recs: make(map[string][]dnsRecord)}
+	f := &fakeCloudflare{t: t, zones: zones, recs: make(map[string][]dnsRecord),
+		tunnel: map[string]any{"id": testTunnel, "name": "home", "status": "healthy", "remote_config": true}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(func() { f.srv.Close() })
 	return f
@@ -80,6 +95,9 @@ func (f *fakeCloudflare) handle(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	switch {
+	case len(parts) >= 4 && parts[0] == "accounts" && parts[2] == "cfd_tunnel":
+		f.handleTunnel(w, r, parts)
+
 	case r.Method == http.MethodGet && len(parts) == 1 && parts[0] == "zones":
 		f.page(w, r, f.zones, len(f.zones))
 
@@ -171,4 +189,91 @@ func writeCF(w http.ResponseWriter, status int, success bool, result any, info *
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// setIngress sets the tunnel's ingress rules (JSON objects).
+func (f *fakeCloudflare) setIngress(rules ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tunnelConfig = map[string]json.RawMessage{
+		"ingress":       json.RawMessage("[" + strings.Join(rules, ",") + "]"),
+		"warp-routing":  json.RawMessage(`{"enabled":false}`),
+		"originRequest": json.RawMessage(`{"connectTimeout":30}`),
+	}
+}
+
+// ingress returns the current rules as "hostname=service" strings.
+func (f *fakeCloudflare) ingress() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var rules []map[string]any
+	_ = json.Unmarshal(f.tunnelConfig["ingress"], &rules)
+	var out []string
+	for _, r := range rules {
+		s := fmt.Sprint(r["hostname"], "=", r["service"])
+		if p, ok := r["path"]; ok {
+			s += " path=" + fmt.Sprint(p)
+		}
+		if o, ok := r["originRequest"].(map[string]any); ok && len(o) > 0 {
+			b, _ := json.Marshal(o)
+			s += " " + string(b)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func (f *fakeCloudflare) handleTunnel(w http.ResponseWriter, r *http.Request, parts []string) {
+	if parts[1] != testAccount || parts[3] != testTunnel {
+		writeCF(w, http.StatusNotFound, false, nil, nil, "1003 tunnel not found")
+		return
+	}
+	switch {
+	case len(parts) == 4 && r.Method == http.MethodGet:
+		writeCF(w, http.StatusOK, true, f.tunnel, nil, "")
+	case len(parts) == 5 && parts[4] == "configurations" && r.Method == http.MethodGet:
+		cfg := map[string]json.RawMessage{}
+		for k, v := range f.tunnelConfig {
+			cfg[k] = v
+		}
+		// Like Cloudflare, return every rule with an originRequest object.
+		if ing, ok := cfg["ingress"]; ok {
+			var rules []map[string]any
+			_ = json.Unmarshal(ing, &rules)
+			for _, rule := range rules {
+				if _, ok := rule["originRequest"]; !ok {
+					rule["originRequest"] = map[string]any{}
+				}
+			}
+			cfg["ingress"], _ = json.Marshal(rules)
+		}
+		var result map[string]any
+		if f.tunnelConfig == nil {
+			result = map[string]any{"tunnel_id": testTunnel, "config": nil}
+		} else {
+			result = map[string]any{"tunnel_id": testTunnel, "config": cfg}
+		}
+		writeCF(w, http.StatusOK, true, result, nil, "")
+	case len(parts) == 5 && parts[4] == "configurations" && r.Method == http.MethodPut:
+		if f.failPut {
+			writeCF(w, http.StatusInternalServerError, false, nil, nil, "1000 internal error")
+			return
+		}
+		var body struct {
+			Config map[string]json.RawMessage `json:"config"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		var rules []map[string]any
+		_ = json.Unmarshal(body.Config["ingress"], &rules)
+		if len(rules) == 0 || rules[len(rules)-1]["hostname"] != nil {
+			writeCF(w, http.StatusBadRequest, false, nil, nil, "1055 last ingress rule must be a catch-all")
+			return
+		}
+		f.tunnelConfig = body.Config
+		f.tunnelPuts++
+		f.writes = append(f.writes, "tunnel put")
+		writeCF(w, http.StatusOK, true, map[string]any{"tunnel_id": testTunnel}, nil, "")
+	default:
+		http.NotFound(w, r)
+	}
 }

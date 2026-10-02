@@ -184,11 +184,18 @@ For hosts routed to a tunnel:
 1. **DNS:** `CNAME <host> → <tunnelId>.cfargotunnel.com`, `proxied: true` (required).
 2. **Ingress (remotely managed tunnels only, `tunnel.manageIngress: true`):**
    `GET/PUT /accounts/{accountId}/cfd_tunnel/{tunnelId}/configurations`
-   - Add `{hostname: <host>, service: <tunnel.service>}`, where `service` is usually
-     `https://traefik:443` with `originRequest.originServerName: <host>` (or `http://traefik:80`).
-   - **Merge, never replace:** keep every ingress rule the plugin does not own (tracked by
-     an ownership list stored in the plugin's state; see §4.5). Keep the catch-all
-     `http_status:404` as the **last** rule. Write only when the merged result differs.
+   - Add `{hostname: <host>, service: <tunnel.service>}`. `service` is Traefik's tunnel
+     entrypoint as cloudflared reaches it (e.g. `http://traefik:8081`), overridable per
+     entrypoint; `https://` services also get `originRequest.originServerName: <host>`.
+   - **Merge, never replace:** rules for other hosts, path rules, unknown fields and other
+     tunnel settings are kept as they are. New rules go before the first wildcard rule; the
+     catch-all stays **last**. Write only when the merged result differs (comparison ignores
+     the `originRequest: {}` Cloudflare adds).
+   - **Ownership:** a rule is the plugin's to change or remove only when the host's `CNAME`
+     carries this instance's marker. It is removed only in the same pass that deletes that
+     `CNAME`, so no separate state is needed. Ingress is written before DNS; if the write
+     fails, the `CNAME` deletions are held back and retried. A differing rule the plugin
+     doesn't own blocks the host (unless `adopt: true`).
 3. **Locally managed tunnels** (`config.yml` in cloudflared): only step 1 is possible. Document
    pointing cloudflared's ingress at Traefik with a wildcard so Traefik does the routing.
 
@@ -238,9 +245,9 @@ mode `none`, for longer than `pruneGrace` (default 15m). Safeguards:
 - the grace period covers container restarts and Traefik loading providers at startup
   (a partial router list), and restarts from zero when Traefik restarts
 - nothing is pruned while discovery returns no hosts at all
-- hosts on tunnel entrypoints and conflicting hosts are kept
+- conflicting hosts are kept
 
-Owned tunnel ingress rules will be removed the same way (Phase 2). The `instanceId` in the
+Owned tunnel ingress rules are removed together with their `CNAME`. The `instanceId` in the
 comment lets several Traefik hosts share one Cloudflare account safely.
 
 ### 4.6 API efficiency & rate limits
@@ -360,12 +367,14 @@ README.md  LICENSE
   ownership guard + prune with grace period + `apiTokenFile` + dry-run. Unit, fake-API
   end-to-end and Yaegi tests; verified inside Traefik v3.7.13 against a stand-in Cloudflare API.
 
-**Phase 2: Tunnel mode (R3)**
-- CNAME to `cfargotunnel.com`, remote ingress merge, docs for local tunnels, and safe
-  DDNS↔tunnel switching of owned records.
+**Phase 2: Tunnel mode (R3)**: ✅ done
+- CNAME to `cfargotunnel.com`, remote ingress merge (foreign rules, wildcards, catch-all
+  and other settings preserved), DNS-only mode for local tunnels, and safe DDNS↔tunnel
+  switching of owned records. Ingress ownership comes from the owned CNAME, so it needs no
+  extra state.
 
 **Phase 3: Hardening & extras**
-- IPv6/AAAA, CNAME anchor, batch API, per-entrypoint `proxied`, TLS domains, TCP routers,
+- IPv6/AAAA as an opt-in (off by default; not needed by the original deployment), CNAME anchor, batch API, per-entrypoint `proxied`, TLS domains, TCP routers,
   status endpoint.
 
 **Phase 4: Publish**
@@ -399,8 +408,7 @@ README.md  LICENSE
    own router), or should each host be **mirrored** across zones (router has
    `app.example.com` → also publish `app.example.org`)? The design covers the first. Mirroring
    would be a small extra feature (`mirrorZones`).
-2. **Tunnel type:** is your tunnel **remotely managed** (dashboard/API) or **locally
-   managed** (`config.yml`)? This decides whether Phase 2 includes ingress management.
+2. ~~Tunnel type~~: **remotely managed** (decided); `manageIngress: false` covers local tunnels.
 3. ~~DDNS vs. tunnel split~~: **by entrypoint** (decided).
 4. ~~Prune~~: **yes**, records no longer needed are removed (decided, R6).
-5. **IPv6:** do you need `AAAA` records?
+5. ~~IPv6~~: not needed for the original deployment; planned as an opt-in for other users.
