@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <title>Cloudflare DNS &amp; Tunnel Sync: a Traefik provider plugin</title>
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e1b4b"/>
+      <stop offset="1" stop-color="#0b1120"/>
+    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#312e81"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="cloud" gradientUnits="userSpaceOnUse" x1="0" y1="110" x2="0" y2="364">
+      <stop offset="0" stop-color="#e0f2fe"/>
+      <stop offset="1" stop-color="#93c5fd"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#page)"/>
+
+  <!-- Icon (same drawing as icon.svg), scaled to 360px -->
+  <g transform="translate(64 140) scale(0.703125)">
+    <rect x="16" y="16" width="480" height="480" rx="104" fill="url(#bg)" stroke="#4338ca" stroke-width="4"/>
+    <g transform="translate(0 22)">
+      <g fill="url(#cloud)">
+        <circle cx="186" cy="268" r="78"/>
+        <circle cx="270" cy="212" r="102"/>
+        <circle cx="352" cy="276" r="70"/>
+        <rect x="108" y="268" width="314" height="96" rx="48"/>
+      </g>
+      <g fill="none" stroke="#312e81" stroke-width="22" stroke-linecap="round">
+        <path d="M 206 280 A 62 62 0 0 1 316 248"/>
+        <path d="M 330 300 A 62 62 0 0 1 220 332"/>
+      </g>
+      <g fill="#312e81">
+        <path d="M 334 222 L 336 274 L 290 258 Z"/>
+        <path d="M 202 358 L 200 306 L 246 322 Z"/>
+      </g>
+    </g>
+  </g>
+
+  <g font-family="Liberation Sans, Arial, Helvetica, sans-serif">
+    <text x="480" y="196" fill="#a5b4fc" font-size="26" font-weight="700" letter-spacing="3">TRAEFIK PROVIDER PLUGIN</text>
+    <text x="480" y="268" fill="#ffffff" font-size="64" font-weight="700">Cloudflare DNS</text>
+    <text x="480" y="340" fill="#ffffff" font-size="64" font-weight="700">&amp; Tunnel Sync</text>
+    <text x="480" y="398" fill="#cbd5e1" font-size="26">Publishes your router hostnames as DDNS records</text>
+    <text x="480" y="434" fill="#cbd5e1" font-size="26">or Tunnel routes, and cleans up after them.</text>
+
+    <!-- Flow: hostnames -> DDNS | Tunnel -->
+    <g font-size="21" font-weight="700" text-anchor="middle">
+      <rect x="480" y="474" width="196" height="48" rx="24" fill="#1e293b" stroke="#475569" stroke-width="2"/>
+      <text x="578" y="505" fill="#e2e8f0">Router hosts</text>
+
+      <path d="M 688 498 H 724" stroke="#a5b4fc" stroke-width="4" stroke-linecap="round"/>
+      <path d="M 722 488 L 736 498 L 722 508 Z" fill="#a5b4fc"/>
+
+      <rect x="748" y="474" width="196" height="48" rx="24" fill="#93c5fd"/>
+      <text x="846" y="505" fill="#1e1b4b">DDNS A / AAAA</text>
+
+      <text x="970" y="505" fill="#94a3b8" font-weight="400">or</text>
+
+      <rect x="996" y="474" width="196" height="48" rx="24" fill="#c7d2fe"/>
+      <text x="1094" y="505" fill="#1e1b4b">Tunnel route</text>
+    </g>
+  </g>
+</svg>

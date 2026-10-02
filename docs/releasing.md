@@ -10,6 +10,9 @@ topic, fetches tagged versions through the Go module proxy, and test-loads them 
 1. Add the **`traefik-plugin`** topic to the repository (GitHub → repository page →
    ⚙ next to *About* → *Topics*). Without it the catalog never sees the plugin.
 2. Keep the repository public.
+3. Optional: use `.assets/banner.png` as the repository's social preview too (GitHub →
+   *Settings* → *General* → *Social preview*). The catalog already uses it as the
+   plugin page's sharing image via `bannerPath`.
 
 ## Each release
 

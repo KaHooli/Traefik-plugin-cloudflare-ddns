@@ -392,7 +392,8 @@ README.md  LICENSE
   from the CHANGELOG.
 - Left to the repo owner (see `docs/releasing.md`): the `traefik-plugin` topic, and pushing
   the first tag after merging.
-- Catalog icon: `.assets/icon.png` (`iconPath`), rendered from `.assets/icon.svg`.
+- Catalog icon `.assets/icon.png` (`iconPath`) and 1280×640 banner `.assets/banner.png`
+  (`bannerPath`), rendered from the matching `.svg` files.
 
 ## 8. Testing strategy
 
