@@ -45,6 +45,8 @@ are no longer needed.
        repointing them in place. This is for migrating a "every subdomain is a `CNAME` to
        the apex" setup; see [Migrating existing records](#migrating-existing-records).
      - Anything else (for example a `CNAME` to another service) is never replaced.
+     - At the zone apex, `MX`, `TXT` and other non-address records don't block the tunnel
+       `CNAME` (Cloudflare flattens it); only `A`, `AAAA` and `CNAME` records there do.
    - An existing tunnel rule for the host that differs from what the plugin would write
      also blocks the host (unless `adopt: true`).
    - Changing a host's mode (moving its router to another entrypoint) swaps the `A` record
@@ -52,7 +54,9 @@ are no longer needed.
 5. **Prune:** when a host disappears from Traefik, or its entrypoint moves to mode `none`,
    the record this instance created is deleted after `pruneGrace` (15 min), together with
    its tunnel rule. The wait covers container restarts and Traefik loading its providers at
-   startup. Nothing is pruned while discovery returns no hosts at all.
+   startup. The grace period only starts once the same host list has been seen
+   `pruneSettlePolls` (3) polls in a row, so a partial list while Traefik starts schedules
+   nothing. Nothing is pruned while discovery returns no hosts at all.
 
 If public-IP detection fails for one family, that family's records are left as they are
 until detection works again; the other family carries on.
@@ -186,6 +190,7 @@ still rely on the apex `A` record, so keep whatever updates it running.
 | `adoptFrom` | — | `CNAME` targets whose `CNAME`s may be taken over and repointed (e.g. your zone apex) |
 | `prune` | `true` | Delete owned records whose host is gone |
 | `pruneGrace` | `15m` | How long a host must be gone before deletion |
+| `pruneSettlePolls` | `3` | Polls in a row with the same host list before missing hosts start their grace period |
 | `entryPoints` / `providers` | all | Only *discover* routers on these entrypoints / from these providers |
 | `traefikApi.includeTlsDomains` | `false` | Also publish routers' `tls.domains` (main and SANs; wildcards skipped) |
 | `traefikApi.includeTcpRouters` | `false` | Also publish TCP routers' `HostSNI` names (always DNS-only) |

@@ -46,6 +46,11 @@ type Config struct {
 	Prune bool `json:"prune" yaml:"prune"`
 	// PruneGrace is how long a hostname must be gone before its record is deleted. Default: 15m.
 	PruneGrace string `json:"pruneGrace,omitempty" yaml:"pruneGrace,omitempty"`
+	// PruneSettlePolls is how many polls in a row must discover the same
+	// hosts before missing hosts start their grace period. It stops a
+	// partial router list (e.g. while Traefik starts) from scheduling
+	// deletions. Default: 3.
+	PruneSettlePolls int `json:"pruneSettlePolls,omitempty" yaml:"pruneSettlePolls,omitempty"`
 
 	// Cloudflare holds API credentials and zone settings.
 	Cloudflare CloudflareConfig `json:"cloudflare,omitempty" yaml:"cloudflare,omitempty"`
@@ -147,6 +152,7 @@ const (
 	defaultVerifyInterval = time.Hour
 	defaultIPInterval     = 5 * time.Minute
 	defaultPruneGrace     = 15 * time.Minute
+	defaultSettlePolls    = 3
 	defaultTimeout        = 10 * time.Second
 	minPollInterval       = 5 * time.Second
 	minIPInterval         = 30 * time.Second
@@ -166,11 +172,12 @@ var defaultIPv6Sources = []string{
 // CreateConfig returns the default configuration. Called by Traefik.
 func CreateConfig() *Config {
 	return &Config{
-		PollInterval:   defaultPollInterval.String(),
-		VerifyInterval: defaultVerifyInterval.String(),
-		DefaultMode:    modeDDNS,
-		Prune:          true,
-		PruneGrace:     defaultPruneGrace.String(),
+		PollInterval:     defaultPollInterval.String(),
+		VerifyInterval:   defaultVerifyInterval.String(),
+		DefaultMode:      modeDDNS,
+		Prune:            true,
+		PruneGrace:       defaultPruneGrace.String(),
+		PruneSettlePolls: defaultSettlePolls,
 		TraefikAPI: TraefikAPIConfig{
 			URL:     defaultAPIURL,
 			Timeout: defaultTimeout.String(),
@@ -215,6 +222,7 @@ type settings struct {
 	adoptFrom       map[string]bool
 	prune           bool
 	pruneGrace      time.Duration
+	settlePolls     int
 
 	cfToken    string
 	cfURL      string
@@ -314,6 +322,13 @@ func (c *Config) validate() (*settings, error) {
 	}
 	if s.pruneGrace < 0 {
 		return nil, errors.New("pruneGrace must not be negative")
+	}
+	s.settlePolls = c.PruneSettlePolls
+	if s.settlePolls == 0 {
+		s.settlePolls = defaultSettlePolls
+	}
+	if s.settlePolls < 1 {
+		return nil, fmt.Errorf("pruneSettlePolls must be at least 1, got %d", s.settlePolls)
 	}
 	if s.timeout, err = parseDuration(c.TraefikAPI.Timeout, defaultTimeout); err != nil {
 		return nil, fmt.Errorf("traefikApi.timeout: %w", err)

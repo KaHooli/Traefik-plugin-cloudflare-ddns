@@ -80,6 +80,9 @@ type planInput struct {
 	// MissingSince tracks when owned hosts were first seen missing. The
 	// planner updates it in place.
 	MissingSince map[string]time.Time
+	// PruneHold stops missing hosts from starting (or finishing) their grace
+	// period, while the discovered host list is still settling.
+	PruneHold bool
 	// Ingress is the tunnel's current ingress list; IngressLoaded is false
 	// when ingress isn't managed.
 	Ingress       []ingressRule
@@ -196,6 +199,9 @@ func planDDNS(t target, z zone, records []dnsRecord, ip, ip6, comment string, s 
 func planRecord(host string, z zone, records []dnsRecord, desired dnsRecord, s *settings) []action {
 	var mine []dnsRecord
 	var deletes []action
+	// Cloudflare flattens a CNAME at the zone apex, so there it can sit next
+	// to MX, TXT and other records; only address records are in the way.
+	apex := strings.EqualFold(host, z.Name)
 
 	for _, r := range records {
 		if !strings.EqualFold(r.Name, host) {
@@ -216,7 +222,7 @@ func planRecord(host string, z zone, records []dnsRecord, desired dnsRecord, s *
 			continue
 		}
 
-		if !conflicts(desired.Type, r.Type, s) {
+		if !conflicts(desired.Type, r.Type, s) || (apex && !isAddressType(r.Type)) {
 			continue
 		}
 		if !owned && !takesOver(r, desired, s) {
@@ -255,6 +261,11 @@ func planRecord(host string, z zone, records []dnsRecord, desired dnsRecord, s *
 		actions = append(actions, action{Kind: actUpdate, Host: host, Zone: z, Record: next, Old: kept})
 	}
 	return actions
+}
+
+// isAddressType reports whether a record type routes traffic (A, AAAA, CNAME).
+func isAddressType(t string) bool {
+	return t == "A" || t == "AAAA" || t == "CNAME"
 }
 
 // adoptsFrom reports whether r is a foreign CNAME whose target is listed in
@@ -339,7 +350,7 @@ func recordInSync(r, desired dnsRecord, instanceID string) bool {
 }
 
 func planPrune(in planInput, keep map[string]bool, s *settings) []action {
-	if in.Discovered == 0 {
+	if in.Discovered == 0 || in.PruneHold {
 		return nil
 	}
 
