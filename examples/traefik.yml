@@ -1,0 +1,60 @@
+# Static configuration for trying the plugin in local mode.
+# The plugin source must be at ./plugins-local/src/github.com/KaHooli/Traefik-plugin-cloudflare-ddns
+# relative to Traefik's working directory (/ in the official image).
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+  # Only reachable by cloudflared (not published as a port); routers on this
+  # entrypoint are published through the tunnel instead of DDNS.
+  tunnel:
+    address: ":8081"
+  # Serves the API on loopback only; the plugin runs inside Traefik and reads it here.
+  traefik:
+    address: "127.0.0.1:8080"
+
+api:
+  insecure: true
+
+log:
+  level: INFO
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+  docker:
+    exposedByDefault: false
+    # Routers without a rule label get this rule; the plugin sees the evaluated host.
+    defaultRule: "Host(`{{ normalize .Name }}.example.com`)"
+
+  plugin:
+    cfsync:
+      dryRun: true                # remove once the logged changes look right
+      traefikApi:
+        url: http://127.0.0.1:8080/api
+      # Entrypoints not listed here use defaultMode (ddns).
+      entryPointModes:
+        tunnel: tunnel            # published via Cloudflare Tunnel
+      exclude:
+        - "mail.example.com"      # never touched, even if a router uses it
+      cloudflare:
+        apiTokenFile: /run/secrets/cf_api_token
+        accountId: "<your-account-id>"
+      tunnel:
+        id: "<tunnel-uuid>"
+        service: http://traefik:8081   # the tunnel entrypoint, as cloudflared sees it
+      # Optional:
+      # ddns:
+      #   ipv6: true                   # also publish AAAA records
+      #   dnsOnlyEntryPoints: [vpn]    # grey-cloud records for these entrypoints
+      # traefikApi:
+      #   includeTcpRouters: true      # publish HostSNI names (DNS-only)
+      #   includeTlsDomains: true      # publish tls.domains main/sans
+
+experimental:
+  localPlugins:
+    cfsync:
+      moduleName: github.com/KaHooli/Traefik-plugin-cloudflare-ddns

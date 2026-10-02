@@ -1,0 +1,48 @@
+# Local-mode demo: Traefik with the plugin mounted from this repository,
+# plus one container using an explicit rule and one relying on defaultRule.
+#   cd examples && docker compose up
+services:
+  traefik:
+    image: traefik:v3.7
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - ..:/plugins-local/src/github.com/KaHooli/Traefik-plugin-cloudflare-ddns:ro
+    secrets:
+      - cf_api_token
+
+  whoami:
+    image: traefik/whoami
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.whoami.rule: Host(`whoami.example.com`)
+      traefik.http.routers.whoami.entrypoints: websecure
+
+  # No rule label: defaultRule produces Host(`blog.example.com`).
+  blog:
+    image: traefik/whoami
+    labels:
+      traefik.enable: "true"
+
+  # Published through the tunnel because its router uses the "tunnel" entrypoint.
+  private:
+    image: traefik/whoami
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.private.rule: Host(`private.example.com`)
+      traefik.http.routers.private.entrypoints: tunnel
+
+  # Remotely-managed tunnel; its ingress rules are maintained by the plugin.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+
+secrets:
+  cf_api_token:
+    file: ./cf_api_token.txt   # a Cloudflare API token with Zone:Read + DNS:Edit

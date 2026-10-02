@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Cloudflare DNS &amp; Tunnel Sync</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#312e81"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <!-- userSpaceOnUse: one gradient across all cloud shapes, so no seams -->
+    <linearGradient id="cloud" gradientUnits="userSpaceOnUse" x1="0" y1="110" x2="0" y2="364">
+      <stop offset="0" stop-color="#e0f2fe"/>
+      <stop offset="1" stop-color="#93c5fd"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Tile -->
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="url(#bg)"/>
+
+  <g transform="translate(0 22)">
+  <!-- Cloud: overlapping shapes with one fill -->
+  <g fill="url(#cloud)">
+    <circle cx="186" cy="268" r="78"/>
+    <circle cx="270" cy="212" r="102"/>
+    <circle cx="352" cy="276" r="70"/>
+    <rect x="108" y="268" width="314" height="96" rx="48"/>
+  </g>
+
+  <!-- Sync arrows: two arcs chasing each other -->
+  <g fill="none" stroke="#312e81" stroke-width="22" stroke-linecap="round">
+    <path d="M 206 280 A 62 62 0 0 1 316 248"/>
+    <path d="M 330 300 A 62 62 0 0 1 220 332"/>
+  </g>
+  <g fill="#312e81">
+    <path d="M 334 222 L 336 274 L 290 258 Z"/>
+    <path d="M 202 358 L 200 306 L 246 322 Z"/>
+  </g>
+  </g>
+</svg>

@@ -1,0 +1,24 @@
+displayName: Cloudflare DNS & Tunnel Sync
+type: provider
+import: github.com/KaHooli/Traefik-plugin-cloudflare-ddns
+basePkg: cfsync
+summary: Publish Traefik router hostnames to Cloudflare as DDNS records or Tunnel routes, across multiple zones.
+# Rendered from .assets/icon.svg and .assets/banner.svg.
+iconPath: .assets/icon.png
+bannerPath: .assets/banner.png
+
+testData:
+  dryRun: true
+  pollInterval: 30s
+  traefikApi:
+    url: http://127.0.0.1:8080/api
+  entryPointModes:
+    tunnel: tunnel
+  exclude:
+    - mail.example.com
+  cloudflare:
+    apiToken: CHANGE_ME
+    accountId: 0123456789abcdef0123456789abcdef
+  tunnel:
+    id: 6ff42ae2-765d-4adf-8112-31c55c1551ef
+    service: http://traefik:8081
