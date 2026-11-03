@@ -11,10 +11,14 @@ are no longer needed.
 > pruning). See [CHANGELOG.md](CHANGELOG.md), [PLAN.md](PLAN.md) for the design, and
 > [docs/releasing.md](docs/releasing.md) for publishing to the plugin catalog.
 
+**Requires Traefik v3.7.13 or later** (developed on v3.7.13, also running on v3.7.17).
+The plugin only reads `/api/http/routers` and `/api/tcp/routers`, so Traefik's API must
+be enabled (see [Setup](#setup)).
+
 ## How it decides what to do
 
 1. **Discover:** every enabled HTTP router's `Host(...)` names, from all providers.
-   `HostRegexp` and wildcards are skipped. Optionally also the routers' `tls.domains`
+   `HostRegexp`, wildcards and negated matchers (`!Host(...)`) are skipped. Optionally also the routers' `tls.domains`
    (`traefikApi.includeTlsDomains`) and TCP routers' `HostSNI(...)` names
    (`traefikApi.includeTcpRouters`).
 2. **Mode by entrypoint:** each host gets the mode of the entrypoints its routers use,

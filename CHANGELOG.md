@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-03
+
+### Fixed
+
+- Negated host matchers (`!Host(...)`, `!HostSNI(...)`, or any matcher inside `!( ... )`)
+  are no longer published. The router does not serve those hosts. They are now skipped
+  and logged like `HostRegexp`.
+
+### Documentation
+
+- README states the supported Traefik version: v3.7.13 or later (tested up to v3.7.17).
+
 ## [0.2.1] - 2026-10-02
 
 ### Fixed

@@ -20,6 +20,7 @@ func TestExtractHostSNI(t *testing.T) {
 		{"HostSNI(`*`)", nil, true},
 		{"HostSNIRegexp(`^.+$`)", nil, true},
 		{"ClientIP(`10.0.0.0/8`)", nil, false},
+		{"HostSNI(`a.example.com`) && !HostSNI(`b.example.com`)", []string{"a.example.com"}, true},
 	}
 	for _, tt := range tests {
 		got, skipped := extractMatcherHosts(tt.rule, "HostSNI")

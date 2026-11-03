@@ -29,6 +29,18 @@ func TestExtractHosts(t *testing.T) {
 		{"not a Host matcher", "MyHost(`a.example.com`)", nil, false},
 		{"header value is not host", "Header(`Host`, `a.example.com`)", nil, false},
 		{"malformed", "Host(`a.example.com`", nil, true},
+		{"negated", "!Host(`a.example.com`)", nil, true},
+		{"negated with space", "! Host(`a.example.com`)", nil, true},
+		{"negated beside positive", "Host(`a.example.com`) && !Host(`b.example.com`)", []string{"a.example.com"}, true},
+		{"negated first", "!Host(`b.example.com`) && Host(`a.example.com`)", []string{"a.example.com"}, true},
+		{"negated group", "!(Host(`a.example.com`) || Host(`b.example.com`))", nil, true},
+		{"negated group then positive", "!(Host(`a.example.com`)) && Host(`b.example.com`)", []string{"b.example.com"}, true},
+		{"nested in negated group", "!(PathPrefix(`/x`) && (Host(`a.example.com`) || Host(`b.example.com`)))", nil, true},
+		{"double negation", "!!Host(`a.example.com`)", []string{"a.example.com"}, false},
+		{"negation inside negated group", "!(!Host(`a.example.com`))", []string{"a.example.com"}, false},
+		{"negated other matcher", "Host(`a.example.com`) && !PathPrefix(`/admin`)", []string{"a.example.com"}, false},
+		{"negated header with host value", "Host(`a.example.com`) && !Header(`X-Host`, `b.example.com`)", []string{"a.example.com"}, false},
+		{"negation does not leak past operator", "!PathPrefix(`/x`) || Host(`a.example.com`)", []string{"a.example.com"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
