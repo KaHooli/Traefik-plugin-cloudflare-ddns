@@ -14,7 +14,7 @@ jobs:
     env:
       GOPATH: ${{ github.workspace }}/go
       GO111MODULE: "off"
-      YAEGI_VERSION: v0.16.1
+      YAEGI_VERSION: v0.16.3
     defaults:
       run:
         # Traefik loads plugins from a GOPATH layout, so Yaegi tests run in one too.
@@ -59,7 +59,7 @@ jobs:
   catalog-smoke:
     runs-on: ubuntu-latest
     env:
-      TRAEFIK_VERSION: v3.7.13
+      TRAEFIK_VERSION: v3.8.0
     steps:
       - uses: actions/checkout@v4
       - name: Download Traefik
