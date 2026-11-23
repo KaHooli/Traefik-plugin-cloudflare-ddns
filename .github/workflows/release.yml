@@ -23,8 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GOPATH: ${{ github.workspace }}/go
-      YAEGI_VERSION: v0.16.1
-      TRAEFIK_VERSION: v3.7.13
+      YAEGI_VERSION: v0.16.3
+      TRAEFIK_VERSION: v3.8.0
     defaults:
       run:
         working-directory: ${{ github.workspace }}/go/src/github.com/KaHooli/Traefik-plugin-cloudflare-ddns

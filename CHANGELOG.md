@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- CI and the release workflow now test against Traefik v3.8.0 and Yaegi v0.16.3 (was
+  v3.7.13 and v0.16.1). No code changes were needed. The README notes that the
+  experimental Yaegi v2 runtime added in Traefik v3.8 is not tested yet.
+
 ## [0.2.2] - 2026-11-03
 
 ### Fixed

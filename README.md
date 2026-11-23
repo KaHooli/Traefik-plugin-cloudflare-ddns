@@ -11,7 +11,9 @@ are no longer needed.
 > pruning). See [CHANGELOG.md](CHANGELOG.md), [PLAN.md](PLAN.md) for the design, and
 > [docs/releasing.md](docs/releasing.md) for publishing to the plugin catalog.
 
-**Requires Traefik v3.7.13 or later** (developed on v3.7.13, also running on v3.7.17).
+**Requires Traefik v3.7.13 or later**; tested on v3.8.0 (Yaegi v0.16.3). It runs on Traefik's
+default plugin runtime (Yaegi v1); the experimental Yaegi v2 runtime in v3.8
+(`experimental.defaultRuntimeVersion: v2`) is not tested yet.
 The plugin only reads `/api/http/routers` and `/api/tcp/routers`, so Traefik's API must
 be enabled (see [Setup](#setup)).
 
@@ -231,7 +233,7 @@ variables are ignored when you use a config file. Prefer `apiTokenFile` with a D
 ```sh
 go test -race ./...
 # Traefik runs plugins in the Yaegi interpreter; always also run:
-go install github.com/traefik/yaegi/cmd/yaegi@v0.16.1
+go install github.com/traefik/yaegi/cmd/yaegi@v0.16.3
 # from a GOPATH layout: $GOPATH/src/github.com/KaHooli/Traefik-plugin-cloudflare-ddns
 GO111MODULE=off yaegi test -v .
 ```
